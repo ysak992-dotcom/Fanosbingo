@@ -59,6 +59,7 @@ import { bodyParserErrorHandler } from './http-errors.js';
 import { createRateLimiter, limitByPlayer } from './rate-limit.js';
 import { createSnsAlertHandler } from './alerts.js';
 import { createOperatorNotifier } from './notify.js';
+import { createTelegramWebhookHandler } from './telegram-webhook.js';
 import { createSelectCardHandler } from './select-card.js';
 import { createClaimBingoHandler } from './claim-bingo.js';
 import { createDeselectCardHandler } from './deselect-card.js';
@@ -92,6 +93,7 @@ const {
   ALLOWED_ORIGIN,
   JWT_SECRET,
   TELEGRAM_BOT_TOKEN,
+  TELEGRAM_WEBHOOK_SECRET,
   PGSSLROOTCERT,
   PGSSLMODE = 'verify-full',
   BSC_CHAIN_ID,
@@ -696,6 +698,30 @@ app.post(
     botToken: TELEGRAM_BOT_TOKEN,
     chatId: TELEGRAM_ALERT_CHAT_ID,
     allowedTopicArns: ALERT_TOPIC_ARNS.split(',').map((s) => s.trim()),
+  }),
+);
+
+/**
+ * POST /telegram/webhook — Telegram's servers, not a browser.
+ *
+ * The last of the routes index.js has listed as "still needs building" since
+ * this service was written. /start to the bot did nothing until now, which for
+ * a Telegram-first product is the front door being locked.
+ *
+ * initData does not apply: Telegram is the caller, not a Mini App client. The
+ * X-Telegram-Bot-Api-Secret-Token header is the entire authentication, checked
+ * STRICTLY -- a missing header is refused, because a forger simply omits it.
+ *
+ * Registration is a separate, deliberate step: scripts/register-telegram-webhook.sh.
+ * Until it runs, this route refuses everything, which is the safe direction.
+ */
+app.post(
+  '/telegram/webhook',
+  createTelegramWebhookHandler({
+    pool,
+    botToken: TELEGRAM_BOT_TOKEN,
+    webhookSecret: TELEGRAM_WEBHOOK_SECRET,
+    appUrl: ALLOWED_ORIGIN,
   }),
 );
 

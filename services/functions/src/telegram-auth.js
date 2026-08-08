@@ -63,6 +63,34 @@ export function timingSafeEqual(a, b) {
  * Deliberately NOT lenient about a missing header. A "verify it if present"
  * check is no check at all here: an attacker forging an update simply omits it.
  */
+/**
+ * Read a header from EITHER shape of request.
+ *
+ * This function was written for the Deno handlers, where a request is a Fetch
+ * `Request` and headers are a `Headers` with `.get()`. This service is Express,
+ * where `req.headers` is a plain lower-cased object and has no `.get()` -- so
+ * the original line would have thrown TypeError the first time Telegram ever
+ * called us.
+ *
+ * It was never caught because nothing called it: the webhook route did not
+ * exist, and telegram-auth.test.mjs builds a real `Request` to test with. A test
+ * that exercises a shape production never presents is not covering the code, it
+ * is covering the test.
+ *
+ * Both shapes are accepted rather than the Express one alone, so the inherited
+ * tests keep their meaning and a future Deno-shaped caller is not broken.
+ */
+function readHeader(req, name) {
+  // Express: req.get() is case-insensitive.
+  if (typeof req?.get === "function") return req.get(name) ?? null;
+  // Fetch: Headers.get(), also case-insensitive.
+  if (typeof req?.headers?.get === "function") return req.headers.get(name) ?? null;
+  // Plain object, as req.headers is under Express. Node lower-cases them.
+  const bag = req?.headers;
+  if (bag && typeof bag === "object") return bag[name.toLowerCase()] ?? null;
+  return null;
+}
+
 export function verifyWebhookSecret(req, expected) {
   if (!expected) {
     return {
@@ -72,7 +100,7 @@ export function verifyWebhookSecret(req, expected) {
     };
   }
 
-  const presented = req.headers.get("X-Telegram-Bot-Api-Secret-Token");
+  const presented = readHeader(req, "X-Telegram-Bot-Api-Secret-Token");
 
   if (!presented) {
     return {
