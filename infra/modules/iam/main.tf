@@ -505,6 +505,42 @@ data "aws_iam_policy_document" "github_deploy" {
   # has to be allowed to read it.
   #
   # Read-only and account-wide; the API takes no resource.
+  # Publishing the two metrics this role's workflows produce.
+  #
+  # NOT PRESENT UNTIL NOW, and its absence was about to page falsely.
+  #
+  # db-backup.yml publishes a heartbeat after each successful upload, and
+  # free-tier-runway.yml publishes the credit balance. Both were written while
+  # db-backup still ran as the TERRAFORM EXECUTOR, which holds
+  # AdministratorAccess -- so the heartbeat worked, and moving that workflow onto
+  # this correctly-scoped role silently removed the permission it depended on.
+  #
+  # What that would have looked like: the 04:00 backup uploads the dump
+  # successfully, then fails on put-metric-data under `set -e`, and the operator
+  # gets "Database backup FAILED" about a backup that is sitting in S3 -- while
+  # `backup-did-not-run` also fires, because no heartbeat arrived. A false page
+  # about a real backup, which is the fastest way to teach somebody to ignore
+  # the alarm.
+  #
+  # Found by running the runway workflow rather than by reading the policy. The
+  # lesson is the narrower one: changing which principal a job assumes is not
+  # complete until every permission it used has been checked, not assumed.
+  #
+  # Same namespace condition as the task roles use, so this role cannot write
+  # into another environment's metrics.
+  statement {
+    sid       = "PublishWorkflowMetrics"
+    effect    = "Allow"
+    actions   = ["cloudwatch:PutMetricData"]
+    resources = ["*"] # PutMetricData does not support resource ARNs.
+
+    condition {
+      test     = "StringEquals"
+      variable = "cloudwatch:namespace"
+      values   = [local.metric_namespc]
+    }
+  }
+
   statement {
     sid       = "ReadFreeTierRunway"
     effect    = "Allow"
