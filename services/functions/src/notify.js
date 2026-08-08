@@ -36,11 +36,17 @@
  */
 
 /** One implementation, shared with src/alerts.js, so a fix reaches both. */
-export async function sendTelegramMessage(fetchImpl, botToken, chatId, text) {
+export async function sendTelegramMessage(fetchImpl, botToken, chatId, text, replyMarkup) {
   const res = await fetchImpl(`https://api.telegram.org/bot${botToken}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    body: JSON.stringify({
+      chat_id: chatId,
+      text,
+      disable_web_page_preview: true,
+      // Omitted entirely when absent: Telegram rejects reply_markup: null.
+      ...(replyMarkup ? { reply_markup: replyMarkup } : {}),
+    }),
   });
 
   if (!res.ok) {

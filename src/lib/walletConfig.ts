@@ -73,7 +73,7 @@ export const modal = createAppKit({
     analytics: false,
   },
   metadata: {
-    name: 'Fanos Bingo',
+    name: 'BingoNovaa',
     description: 'Multiplayer Bingo Game with BNB Payments',
     url: import.meta.env.VITE_APP_URL || 'https://fanosbingo.com',
     icons: ['https://fanosbingo.com/icon.png']

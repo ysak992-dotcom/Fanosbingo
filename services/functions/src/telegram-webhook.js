@@ -61,27 +61,58 @@ async function resolveGameUrl(pool, fallback) {
   }
 }
 
-const WELCOME = (url) =>
-  [
-    '🎮 Welcome to Fanos Bingo!',
-    '',
-    'Tap below to open the game and join a round.',
-    '',
-    url,
-    '',
-    'Deposit with TeleBirr or CBE, play, and withdraw to your own bank account.',
-  ].join('\n');
+/**
+ * The product's name as a player sees it.
+ *
+ * The bot is @BingoNovaaBot and the game is BingoNovaa. "Fanos Bingo" is the
+ * repository's name and was leaking into the one place a player actually reads
+ * -- the first message they ever get from the bot.
+ */
+const BOT_NAME = 'BingoNovaa';
 
-const HELP = (url) =>
-  [
-    'Fanos Bingo',
-    '',
-    `Open the game: ${url}`,
-    '',
-    'Deposits and withdrawals are handled inside the game.',
-    'If a deposit is taking longer than expected, an operator is checking their',
-    'bank statement -- it is reviewed by a person, not automatically.',
-  ].join('\n');
+/**
+ * A BUTTON, NOT A LINK IN THE TEXT.
+ *
+ * A bare https:// URL in a message body opens a BROWSER, which drops the player
+ * out of Telegram and loses the Mini App context entirely -- they land on the
+ * web build with no initData and cannot log in. It also looks like a link
+ * somebody pasted rather than a product.
+ *
+ * A web_app button opens the Mini App INSIDE Telegram, which is where this game
+ * is meant to run.
+ *
+ * WEB_APP BUTTONS ARE PRIVATE-CHAT ONLY. Telegram rejects them in groups and
+ * channels with BUTTON_TYPE_INVALID, which would make /start in a group fail
+ * outright rather than degrade. So a group gets a plain url button instead: it
+ * still opens the game, just via the browser, and nothing errors.
+ */
+function playButton(url, chatType) {
+  const text = `🎮 Play ${BOT_NAME}`;
+
+  return {
+    inline_keyboard: [
+      [chatType === 'private' ? { text, web_app: { url } } : { text, url }],
+    ],
+  };
+}
+
+const WELCOME = [
+  `🎮 Welcome to ${BOT_NAME}!`,
+  '',
+  'Tap the button below to open the game and join a round.',
+  '',
+  'Deposit with TeleBirr or CBE, play, and withdraw to your own bank account.',
+].join('\n');
+
+const HELP = [
+  BOT_NAME,
+  '',
+  'Tap the button below to open the game.',
+  '',
+  'Deposits and withdrawals are handled inside the game.',
+  'If a deposit is taking longer than expected, an operator is checking their',
+  'bank statement -- it is reviewed by a person, not automatically.',
+].join('\n');
 
 /**
  * @param {object}   opts
@@ -128,9 +159,15 @@ export function createTelegramWebhookHandler({
       if (command !== '/start' && command !== '/help') return;
 
       const url = await resolveGameUrl(pool, appUrl);
-      const body = command === '/start' ? WELCOME(url) : HELP(url);
+      const body = command === '/start' ? WELCOME : HELP;
 
-      await sendTelegramMessage(fetchImpl, botToken, chatId, body);
+      await sendTelegramMessage(
+        fetchImpl,
+        botToken,
+        chatId,
+        body,
+        playButton(url, message?.chat?.type),
+      );
       req.log?.warn?.({ event: 'webhook_replied', command, chat_id: chatId });
     } catch (err) {
       // Swallowed on purpose: the 200 has already gone, and there is nothing

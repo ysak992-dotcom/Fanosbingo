@@ -105,7 +105,11 @@ const build = (f, pool = poolWith(null)) =>
   check('a genuine /start answers 200', res.code === 200);
   check('and replies', f.sent.length === 1);
   check('to the chat that messaged', f.sent[0].body.chat_id === 424946351);
-  check('with the app link', /https:\/\/app\.example\.test/.test(f.sent[0].body.text));
+  // The URL must NOT be in the message body: a bare link opens a BROWSER,
+  // dropping the player out of Telegram with no initData, so they cannot log in.
+  check('does NOT put a raw link in the text', /https?:\/\//.test(f.sent[0].body.text) === false);
+  check('names the product, not the repository', /BingoNovaa/.test(f.sent[0].body.text));
+  check('and carries a button instead', Boolean(f.sent[0].body.reply_markup?.inline_keyboard));
 }
 
 // --- the operator can move the link without a deploy ----------------------
@@ -114,7 +118,9 @@ const build = (f, pool = poolWith(null)) =>
   const h = build(f, poolWith('https://t.me/BingoNovaaBot?startapp'));
   await h(mkReq(SECRET, { message: { text: '/start', chat: { id: 7 } } }), mkRes());
   await sleep(10);
-  check('game_url from settings wins over the fallback', /t\.me\/BingoNovaaBot/.test(f.sent[0].body.text));
+  const btn = f.sent[0].body.reply_markup.inline_keyboard[0][0];
+  check('game_url from settings wins over the fallback',
+    (btn.web_app?.url ?? btn.url) === 'https://t.me/BingoNovaaBot?startapp');
 }
 
 // --- a database outage must not silence the bot ---------------------------
@@ -124,7 +130,8 @@ const build = (f, pool = poolWith(null)) =>
   await h(mkReq(SECRET, { message: { text: '/start', chat: { id: 8 } } }), mkRes());
   await sleep(10);
   check('a settings lookup failure still answers the player', f.sent.length === 1);
-  check('using the fallback link', /app\.example\.test/.test(f.sent[0].body.text));
+  const b = f.sent[0].body.reply_markup.inline_keyboard[0][0];
+  check('using the fallback link', (b.web_app?.url ?? b.url).includes('app.example.test'));
 }
 
 // --- always 200 once authenticated ---------------------------------------
@@ -164,6 +171,27 @@ const build = (f, pool = poolWith(null)) =>
   await h(mkReq(SECRET, { message: { text: '/start@BingoNovaaBot', chat: { id: 1 } } }), mkRes());
   await sleep(10);
   check('/start@BotName is recognised (this is what groups send)', f.sent.length === 1);
+}
+
+// --- the button type depends on where the message came from ---------------
+//
+// web_app buttons are PRIVATE-CHAT ONLY. Telegram rejects them in groups with
+// BUTTON_TYPE_INVALID, so /start in a group would fail outright rather than
+// degrade. A group gets a plain url button instead.
+{
+  const f = capture();
+  const h = build(f);
+
+  await h(mkReq(SECRET, { message: { text: '/start', chat: { id: 1, type: 'private' } } }), mkRes());
+  await sleep(10);
+  const priv = f.sent[0].body.reply_markup.inline_keyboard[0][0];
+  check('a private chat gets a web_app button (opens inside Telegram)', Boolean(priv.web_app));
+
+  await h(mkReq(SECRET, { message: { text: '/start', chat: { id: 2, type: 'group' } } }), mkRes());
+  await sleep(10);
+  const grp = f.sent[1].body.reply_markup.inline_keyboard[0][0];
+  check('a GROUP gets a plain url button, which Telegram accepts there', Boolean(grp.url));
+  check('and no web_app button, which it would reject', grp.web_app === undefined);
 }
 
 console.log(failures ? `\n${failures} assertion(s) failed.` : '\nAll webhook tests passed.');

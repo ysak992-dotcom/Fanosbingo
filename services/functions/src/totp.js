@@ -141,7 +141,10 @@ export function verify(secret, token, atMs = Date.now(), window = 1) {
  * prefix, newer ones read the parameter, and omitting either makes the entry
  * show up unlabelled on somebody's phone.
  */
-export function otpauthUri(secret, account, issuer = 'Fanos Bingo') {
+// The label a player sees in their authenticator app. Changing it affects
+// only NEW enrolments -- an existing entry keeps whatever label it was created
+// with, because the label is baked into the URI at enrolment and never re-read.
+export function otpauthUri(secret, account, issuer = 'BingoNovaa') {
   const label = encodeURIComponent(`${issuer}:${account}`);
   const params = new URLSearchParams({
     secret,
