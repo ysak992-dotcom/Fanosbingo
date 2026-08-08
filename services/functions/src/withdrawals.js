@@ -160,7 +160,7 @@ export function createAvailableBalanceHandler(pool) {
  * reasoning as the deposit claim. A request naming a bank we do not pay out to
  * is one the operator has to notice and refuse by hand.
  */
-export function createRequestWithdrawalHandler(pool) {
+export function createRequestWithdrawalHandler(pool, notifier) {
   return async function request(req, res) {
     const parsed = validateWithdrawalRequest(req.body);
     if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error });
@@ -214,7 +214,18 @@ export function createRequestWithdrawalHandler(pool) {
         bank: banks[0].bank_name,
       });
 
-      return res.status(201).json(result);
+      res.status(201).json(result);
+
+      // After the response and not awaited, for the same reason as the deposit
+      // claim: this is money the player is owed and the request is already
+      // recorded. A notification failure must not become their error.
+      notifier?.withdrawalRequested({
+        telegramUserId: req.auth.telegramUserId,
+        amount: parsed.amount,
+        bank: banks[0].bank_name,
+        accountNumber: parsed.accountNumber,
+      });
+      return;
     } finally {
       client.release();
     }

@@ -52,7 +52,7 @@ export function validateClaim(body) {
 }
 
 /** POST /deposits/claim — a player says they have transferred money. */
-export function createDepositClaimHandler(pool) {
+export function createDepositClaimHandler(pool, notifier) {
   return async function claim(req, res) {
     const parsed = validateClaim(req.body);
     if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error });
@@ -79,7 +79,20 @@ export function createDepositClaimHandler(pool) {
         [req.auth.uid, banks[0].id, banks[0].bank_name, parsed.reference, parsed.amount],
       );
 
-      return res.status(201).json({ success: true, request: rows[0] });
+      res.status(201).json({ success: true, request: rows[0] });
+
+      // AFTER the response, and not awaited. Notifying is not part of filing a
+      // claim: the row is committed and the player is answered, so an
+      // unreachable api.telegram.org must not turn their deposit into an error.
+      // See src/notify.js -- it swallows its own failures into the log, and the
+      // pending-deposit alarm remains the backstop.
+      notifier?.depositClaimed({
+        telegramUserId: req.auth.telegramUserId,
+        amount: parsed.amount,
+        bank: banks[0].bank_name,
+        reference: parsed.reference,
+      });
+      return;
     } catch (err) {
       // 23505 is the (bank_name, lower(reference_number)) index. It is the
       // control that stops one transfer being credited twice, so it fires on the

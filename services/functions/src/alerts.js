@@ -59,6 +59,9 @@
  */
 
 import crypto from 'node:crypto';
+// One implementation, shared with the operator notifier, so a fix to the
+// Telegram call reaches both rather than one of them.
+import { sendTelegramMessage as sendTelegram } from './notify.js';
 
 /** Hosts Amazon signs from. Anything else is a forgery attempt, not a typo. */
 const SNS_HOST = /^sns\.[a-z0-9-]+\.amazonaws\.com$/;
@@ -221,22 +224,6 @@ function renderAlarm(body, subject) {
   return lines.join('\n').slice(0, 3900); // Telegram caps a message at 4096.
 }
 
-async function sendTelegram(fetchImpl, botToken, chatId, text) {
-  const res = await fetchImpl(`https://api.telegram.org/bot${botToken}/sendMessage`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      chat_id: chatId,
-      text,
-      disable_web_page_preview: true,
-    }),
-  });
-
-  if (!res.ok) {
-    const detail = await res.text().catch(() => '');
-    throw new Error(`telegram sendMessage HTTP ${res.status}: ${detail.slice(0, 300)}`);
-  }
-}
 
 /**
  * @param {object}   opts

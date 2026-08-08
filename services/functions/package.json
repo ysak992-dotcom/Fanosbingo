@@ -7,7 +7,7 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "node src/auth.test.mjs && node src/login-widget.test.mjs && node src/telegram-auth.test.mjs && node src/kms-signer.test.mjs && node src/chain.test.mjs && node src/http-errors.test.mjs && node src/rate-limit.test.mjs && node src/select-card.test.mjs && node src/claim-bingo.test.mjs && node src/admin.test.mjs && node src/deposits.test.mjs && node src/withdrawals.test.mjs && node src/deselect-card.test.mjs && node src/alerts.test.mjs && node src/totp.test.mjs && node src/second-factor.test.mjs && node src/cors.test.mjs"
+    "test": "node src/auth.test.mjs && node src/login-widget.test.mjs && node src/telegram-auth.test.mjs && node src/kms-signer.test.mjs && node src/chain.test.mjs && node src/http-errors.test.mjs && node src/rate-limit.test.mjs && node src/select-card.test.mjs && node src/claim-bingo.test.mjs && node src/admin.test.mjs && node src/deposits.test.mjs && node src/withdrawals.test.mjs && node src/deselect-card.test.mjs && node src/alerts.test.mjs && node src/totp.test.mjs && node src/second-factor.test.mjs && node src/cors.test.mjs && node src/notify.test.mjs"
   },
   "dependencies": {
     "@aws-sdk/client-kms": "^3.700.0",

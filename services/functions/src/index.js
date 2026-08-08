@@ -58,6 +58,7 @@ import { verifyChainId, chainName } from './chain.js';
 import { bodyParserErrorHandler } from './http-errors.js';
 import { createRateLimiter, limitByPlayer } from './rate-limit.js';
 import { createSnsAlertHandler } from './alerts.js';
+import { createOperatorNotifier } from './notify.js';
 import { createSelectCardHandler } from './select-card.js';
 import { createClaimBingoHandler } from './claim-bingo.js';
 import { createDeselectCardHandler } from './deselect-card.js';
@@ -230,6 +231,20 @@ const limitMoney = limitByPlayer({ limiter: moneyLimiter, name: 'money' });
 //
 // The population is small enough that the honest control is the audit trail:
 // db/20-post/006 records decided_by on every approval.
+
+// Per-claim notification to the operator, reusing the chat the alarms already
+// reach. modules/monitoring's four-hour pending-deposit alarm was explicitly
+// written as "the backstop underneath a per-claim notification"; this is the
+// notification, and the alarm stays -- a message nobody reads produces no alarm.
+const notifier = createOperatorNotifier({
+  botToken: TELEGRAM_BOT_TOKEN,
+  chatId: TELEGRAM_ALERT_CHAT_ID,
+  log,
+});
+
+if (!notifier.enabled) {
+  log('warn', 'operator notifications disabled; TELEGRAM_ALERT_CHAT_ID is not set');
+}
 
 const app = express();
 app.disable('x-powered-by');
@@ -540,7 +555,7 @@ app.post('/admin/totp/confirm', requireAuth(JWT_SECRET), requireAdmin(pool), cre
  * a SELECT policy scoped to player_id = auth.uid(), so the Mini App fetches its
  * history straight from PostgREST.
  */
-app.post('/deposits/claim', requireAuth(JWT_SECRET), limitMoney, createDepositClaimHandler(pool));
+app.post('/deposits/claim', requireAuth(JWT_SECRET), limitMoney, createDepositClaimHandler(pool, notifier));
 
 app.get(
   '/admin/deposits',
@@ -600,7 +615,7 @@ app.post(
   '/withdrawals/request',
   requireAuth(JWT_SECRET),
   limitMoney,
-  createRequestWithdrawalHandler(pool),
+  createRequestWithdrawalHandler(pool, notifier),
 );
 
 app.get(
