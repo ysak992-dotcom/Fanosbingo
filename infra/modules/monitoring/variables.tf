@@ -241,3 +241,30 @@ variable "backup_alarm_hours" {
     error_message = "Must exceed the 24-hour backup interval, or the alarm fires between normal runs."
   }
 }
+
+variable "enable_free_tier_alarm" {
+  description = <<-EOT
+    Alarm when free-tier credits run low.
+
+    ON where .github/workflows/free-tier-runway.yml publishes the metric. Turn it
+    OFF elsewhere: the alarm treats absent data as breaching, deliberately, so it
+    would fire from creation in an environment nothing publishes to.
+
+    Turn it off too once the account is on a PAID plan -- there is no cliff then,
+    and the workflow publishes a sentinel rather than a balance.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "free_tier_credit_floor" {
+  description = <<-EOT
+    Credit balance, in USD, below which to alert.
+
+    Roughly a month of runway at the observed burn of ~$1.30/day. It is a
+    DURATION expressed in dollars, not an opinion about dollars -- if the burn
+    rises, this should rise with it.
+  EOT
+  type        = number
+  default     = 50
+}

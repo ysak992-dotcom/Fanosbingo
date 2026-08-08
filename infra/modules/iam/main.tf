@@ -495,6 +495,23 @@ data "aws_iam_policy_document" "github_deploy" {
   # ACCOUNT security topic, which carries root-usage and unexpected-kms-sign.
   # Being able to forge those would let a compromised deploy role bury the
   # detections that exist to catch it.
+  # Reading how long this account has left.
+  #
+  # THE SPEND BUDGETS CANNOT SEE THIS. Every budget here watches cost, and cost
+  # is ZERO on a FREE plan -- credits absorb the bill before it reaches Cost
+  # Explorer. Measured: `ce get-cost-and-usage` returns -0.0000001/day while the
+  # credit balance falls by roughly $1.30/day. So the only signal that this
+  # account is approaching SUSPENSION is the plan state itself, and something
+  # has to be allowed to read it.
+  #
+  # Read-only and account-wide; the API takes no resource.
+  statement {
+    sid       = "ReadFreeTierRunway"
+    effect    = "Allow"
+    actions   = ["freetier:GetAccountPlanState"]
+    resources = ["*"] # This action does not support resource scoping.
+  }
+
   statement {
     sid       = "ReportBackupFailure"
     effect    = "Allow"

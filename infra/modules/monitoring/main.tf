@@ -26,9 +26,10 @@
  * the site can be unreachable -- see the comment on the Route 53 check for the
  * specific way that happens after an instance replacement.
  *
- * ALARM BUDGET: this module defines ELEVEN alarms. Ten was the whole CloudWatch
- * free-tier allowance, so the eleventh costs $0.10/mo, and the health check
- * itself is $0.75/mo -- the NON-AWS endpoint rate, because the hostname resolves
+ * ALARM BUDGET: this module defines THIRTEEN alarms -- the twelfth is
+ * `backup-did-not-run`, the thirteenth `free-tier-credits-low`. Ten was the whole
+ * CloudWatch free-tier allowance, so three cost $0.10/mo each, and the health
+ * check itself is $0.75/mo -- the NON-AWS endpoint rate, because the hostname resolves
  * to Cloudflare rather than to an AWS address. About $0.85 against a $32 budget,
  * spent deliberately, to cover the only failure mode nothing else can see.
  *
@@ -663,6 +664,63 @@ resource "aws_cloudwatch_metric_alarm" "api_unreachable" {
 # rather than absorbed, because the point of the header comment is that nothing
 # here is billed by accident.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# How long this account has left
+#
+# THE ONE ALARM NO BUDGET CAN REPLACE.
+#
+# Every budget in this project watches SPEND. On a FREE account plan spend is
+# zero -- credits absorb the bill before it reaches Cost Explorer, measured at
+# -0.0000001/day while the credit balance falls by about $1.30/day. So all of
+# them sit at OK right up to the moment the account is suspended.
+#
+# And suspension is what happens: a FREE plan that exhausts its credits does not
+# start billing, it SUSPENDS RESOURCES. For a real-money game that is the game
+# stopping, with player balances inside a suspended database.
+#
+# TWO DEADLINES, and the nearer one is not the one written in the docs:
+#
+#   plan expiry   2027-01-14, fixed
+#   credits       ~$150 at ~$1.30/day, so roughly 115 days
+#
+# The credits bind first. Alarming on the balance rather than the date is what
+# makes that visible.
+#
+# THRESHOLD is a month of runway at the observed burn, which is enough time to
+# upgrade the plan deliberately rather than in a hurry. Raise it if the burn
+# rises -- the number is a duration expressed in dollars, not a dollar opinion.
+#
+# treat_missing_data = "breaching": the metric is published once a day by
+# .github/workflows/free-tier-runway.yml, so its absence means that check has
+# stopped running -- and a runway alarm that goes quiet is indistinguishable
+# from one that has nothing to report. Same reasoning as game_loop_stalled.
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_metric_alarm" "free_tier_runway" {
+  count = var.enable_free_tier_alarm ? 1 : 0
+
+  alarm_name        = "${var.name_prefix}-free-tier-credits-low"
+  alarm_description = "Free-tier credits below $${var.free_tier_credit_floor}. On a FREE plan, exhausting credits SUSPENDS resources -- it does not bill. No spend budget can see this, because credits absorb the cost before Cost Explorer does."
+
+  namespace   = var.metric_namespace
+  metric_name = "FreeTierCreditsRemaining"
+  statistic   = "Minimum"
+
+  # Published daily, so a day-long period with one datapoint to alarm.
+  period              = 86400
+  evaluation_periods  = 1
+  datapoints_to_alarm = 1
+  comparison_operator = "LessThanThreshold"
+  threshold           = var.free_tier_credit_floor
+
+  dimensions = { Environment = var.environment }
+
+  alarm_actions      = [aws_sns_topic.alerts.arn]
+  ok_actions         = [aws_sns_topic.alerts.arn]
+  treat_missing_data = "breaching"
+
+  tags = var.tags
+}
+
 resource "aws_cloudwatch_metric_alarm" "backup_missing" {
   count = var.enable_backup_alarm ? 1 : 0
 

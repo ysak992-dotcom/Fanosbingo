@@ -177,8 +177,14 @@ module "rds" {
   # documents from the other side -- on a FREE plan, exhausting credits SUSPENDS
   # resources rather than billing for them. With $154.48 left and a 2027-01-14
   # expiry, a real-money game is currently scheduled to be suspended on a date
-  # nobody chose. The account-wide budget added in infra/environments/account is
-  # what makes the credit burn visible before then.
+  # nobody chose.
+  #
+  # AND NO BUDGET CAN WARN YOU. An earlier version of this comment credited the
+  # account-wide budget with making the credit burn visible. It cannot: every
+  # budget watches SPEND, and spend is zero while credits absorb the bill --
+  # measured at -0.0000001/day in Cost Explorer while credits fell about $1.30 a
+  # day. What actually watches it is FreeTierCreditsRemaining, published daily by
+  # .github/workflows/free-tier-runway.yml and alarmed in modules/monitoring.
   backup_retention_period = 1
 }
 
@@ -371,6 +377,12 @@ module "monitoring" {
   # player-visible outage happens.
   domain_name                  = var.domain_name
   enable_external_health_check = true
+
+  # The only alarm no budget can replace. Every budget here watches SPEND, and
+  # spend is zero on a FREE plan -- credits absorb the bill before Cost Explorer
+  # sees it, so they all sit at OK until the account is suspended. See the
+  # comment on the alarm itself, and .github/workflows/free-tier-runway.yml.
+  enable_free_tier_alarm = true
 
   alert_emails = var.alert_emails
 

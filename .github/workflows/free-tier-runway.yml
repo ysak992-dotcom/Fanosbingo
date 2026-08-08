@@ -1,0 +1,124 @@
+name: Free tier runway
+
+# How long before this account stops.
+#
+# THE BUDGETS CANNOT SEE THIS, and that is the entire reason this exists.
+#
+# infra/environments/account has an unfiltered budget and each environment has
+# its own. All of them watch SPEND, and spend is zero: this account is on the
+# FREE plan, and credits absorb the bill before it reaches Cost Explorer.
+# Measured -- `aws ce get-cost-and-usage` for August returns -0.0000001 per day
+# while credits fall by roughly $1.30 a day. Every budget alarm here would sit
+# at OK until the moment the resources were suspended.
+#
+# WHAT ACTUALLY HAPPENS AT THE END. On a FREE account plan, exhausting credits
+# does not produce a bill -- it SUSPENDS resources. For a real-money game that
+# is not a billing event, it is the game stopping, with player balances inside a
+# suspended database.
+#
+# TWO DEADLINES, and the nearer one is not the obvious one:
+#
+#   plan expiry     2027-01-14, fixed and known
+#   credits         ~$150 at ~$1.30/day, so roughly 115 days
+#
+# The credits run out FIRST. The expiry date is the one written in the docs and
+# it is the wrong one to plan around.
+#
+# So this publishes the remaining credits as a CloudWatch metric once a day, and
+# modules/monitoring alarms when it falls below a threshold that leaves about a
+# month to act. It reaches email and Telegram like every other alarm.
+
+on:
+  schedule:
+    # 05:00 UTC, an hour after the backup, so a failure in one is not read as a
+    # failure in the other.
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  runway:
+    name: Publish free tier runway
+    runs-on: ubuntu-latest
+    environment: dev
+
+    steps:
+      - name: Assume AWS role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-dev-github-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: free-tier-runway-${{ github.run_id }}
+
+      - name: Read the plan and publish it
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+
+          STATE="$(aws freetier get-account-plan-state --output json)"
+          echo "$STATE"
+
+          PLAN="$(echo "$STATE" | python3 -c 'import json,sys; print(json.load(sys.stdin)["accountPlanType"])')"
+          CREDITS="$(echo "$STATE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("accountPlanRemainingCredits",{}).get("amount",0))')"
+          EXPIRY="$(echo "$STATE" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("accountPlanExpirationDate",""))')"
+
+          # One line, so nothing dedents out of the `run:` block. A multi-line
+          # python -c here starts at column 0 and breaks the YAML, which is the
+          # same trap the SNS message body hit in db-backup.yml.
+          DAYS="$(EXPIRY="$EXPIRY" python3 -c 'import os,datetime as d; e=os.environ["EXPIRY"]; print(9999 if not e else max(0,(d.datetime.fromisoformat(e.replace("Z","+00:00"))-d.datetime.now(d.timezone.utc)).days))')"
+
+          echo "plan=$PLAN credits=$CREDITS days_to_expiry=$DAYS"
+
+          # A PAID plan has no cliff, so publish a large sentinel rather than a
+          # real credit balance -- otherwise upgrading would leave the alarm
+          # firing on a number that no longer means anything.
+          if [ "$PLAN" != "FREE" ]; then
+            echo "Plan is $PLAN; no free-tier cliff. Publishing sentinel."
+            CREDITS=99999
+            DAYS=9999
+          fi
+
+          aws cloudwatch put-metric-data \
+            --namespace "FanosBingo/fanosbingo-dev" \
+            --metric-name FreeTierCreditsRemaining \
+            --dimensions "Environment=dev" \
+            --value "$CREDITS" --unit None
+
+          aws cloudwatch put-metric-data \
+            --namespace "FanosBingo/fanosbingo-dev" \
+            --metric-name FreeTierDaysToExpiry \
+            --dimensions "Environment=dev" \
+            --value "$DAYS" --unit Count
+
+          {
+            echo "### Free tier runway"
+            echo
+            echo "- plan: \`$PLAN\`"
+            echo "- credits remaining: **\$$CREDITS**"
+            echo "- days to plan expiry: **$DAYS**"
+            echo
+            echo "On a FREE plan, exhausting credits SUSPENDS resources — it does not bill."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report failure to the alerts topic
+        if: failure()
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+        run: |
+          set -euo pipefail
+          ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
+          aws sns publish \
+            --topic-arn "arn:aws:sns:${AWS_REGION}:${ACCOUNT}:fanosbingo-dev-alerts" \
+            --subject "Free tier runway check FAILED" \
+            --message "$(printf '%s\n' \
+              'Could not read the free-tier plan state.' \
+              '' \
+              'The credit balance is the ONLY signal that this account is approaching' \
+              'suspension -- the spend budgets cannot see it, because credits absorb' \
+              'the bill before it reaches Cost Explorer.' \
+              '' \
+              'Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}')"
