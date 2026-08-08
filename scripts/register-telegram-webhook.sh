@@ -59,7 +59,12 @@ WEBHOOK_SECRET="$(aws ssm get-parameter --name "/${PREFIX}/telegram/webhook_secr
 # useful parts and neither is sensitive.
 echo "${BOLD}==>${NC} Current registration"
 CURRENT="$(curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo")"
-echo "$CURRENT" | sed 's/"url":"[^"]*"/"url":"&"/' | python3 -c '
+# No sed here. An earlier version tried to "protect" the url with
+# s/"url":"[^"]*"/"url":"&"/ -- where & re-inserts the WHOLE match, producing
+# "url":""url":"..."" and invalid JSON, so the report silently became
+# "(could not parse getWebhookInfo)". Nothing in the response is sensitive: the
+# token is in the request path, not the body.
+echo "$CURRENT" | python3 -c '
 import json,sys
 d = json.load(sys.stdin).get("result", {})
 print("      url:", d.get("url") or "(none registered)")
@@ -101,7 +106,12 @@ curl -sS "https://api.telegram.org/bot${BOT_TOKEN}/getWebhookInfo" | python3 -c 
 import json,sys
 d = json.load(sys.stdin).get("result", {})
 print("      url:", d.get("url") or "(none)")
-print("      secret token set:", bool(d.get("has_custom_certificate") is not None))
+# getWebhookInfo does NOT report whether a secret_token is set -- an earlier
+# version printed has_custom_certificate here, which is about a self-signed
+# TLS certificate and is always present. Reporting it as "secret token set"
+# would have said "true" whether or not the secret was registered, which is
+# the one thing this step exists to confirm. The real confirmation is
+# behavioural: send /start and see whether the bot answers.
 print("      allowed updates:", d.get("allowed_updates") or "(all)")
 ' 2>/dev/null || true
 
