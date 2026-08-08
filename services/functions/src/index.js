@@ -250,7 +250,20 @@ app.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', ALLOWED_ORIGIN || 'null');
   res.set('Vary', 'Origin');
   res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  // X-Admin-TOTP MUST BE LISTED, or the browser refuses to send it.
+  //
+  // A header the server reads is not a header the browser may transmit: the
+  // preflight decides that, and anything absent from this list is stripped
+  // before the request is made. The second-factor retry therefore never left
+  // the browser, and Firefox reported it as
+  //
+  //   NetworkError when attempting to fetch resource
+  //
+  // which reads like the API is down rather than like a header being refused.
+  // The server saw only the FIRST attempt -- logged as second_factor_rejected --
+  // and nothing at all from the retry, so the logs looked like an operator
+  // giving up rather than a client being blocked.
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Admin-TOTP');
   res.set('Access-Control-Max-Age', '600');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   return next();
