@@ -164,6 +164,46 @@ against PostgREST, not routes. See §7.
 > not deliver" in README.md. `dev` also now carries prod's RDS protections,
 > because `dev` **is** production until cutover.
 
+> **Updated 2026-08-08.** Sixteen alarms now: the twelfth per-environment one is
+> `backup-did-not-run`. Four things shipped that this document previously listed
+> as outstanding, and each cost a lesson worth more than the feature:
+>
+> **Nightly logical backups**, 30 days, S3, alarmed on absence. RDS retention is
+> capped at 1 day by the account plan (`FreeTierRestrictionError`, refused at 2
+> as well), so these are the only recovery point older than 24 hours. The
+> verification was built BEFORE the upload and therefore destroyed the thing it
+> checked — several nights stored nothing. Reordered: a check on a backup is not
+> a precondition of one. See RESTORE.md.
+>
+> **A second factor on money actions** (`db/20-post/016`). The first version put
+> `totp_secret` on `telegram_users`; the migration's own assertion refused it,
+> because that table grants `SELECT` to `authenticated` at TABLE level and
+> PostgREST serves every column a role may read. A column-level `REVOKE` cannot
+> override a table-level grant. The secret lives in its own table now.
+>
+> **Per-claim operator notification.** A deposit claim reaches the operator in
+> seconds. The 4-hour queue alarm stays as the backstop — it answers "is anybody
+> looking at the queue at all", which a message cannot.
+>
+> **The bot answers.** `verifyWebhookSecret` would have thrown on Telegram's
+> first call: it read `req.headers.get(...)`, the Fetch shape it was written for
+> under Deno, and Express has no `.get()` there. Nothing caught it because
+> nothing called it, and its test builds a real `Request`.
+>
+> THE PATTERN ACROSS ALL FOUR, worth more than any of them: **four defects were
+> shipped and then found by running the system, not by reading it** — and in
+> three cases a test was GREEN while the code was broken, because the double
+> answered questions the real dependency would have refused. Guards now exist for
+> each: the pool double asserts the table, the CORS test derives the allow-list
+> from `req.get()` call sites, and both were verified by reintroducing the exact
+> bug and watching them fail.
+>
+> One more, found while diagnosing: `ssm:StartSession` had been broken since
+> 2026-08-01 11:50, so **no migration could reach the production database for a
+> week**. One statement listed the SSM document and the instance under a single
+> `resourceTag` condition an AWS-owned document can never satisfy. Split in two,
+> proven with the IAM simulator.
+
 | Change | Why |
 |---|---|
 | `modules/app_stack`, called by dev **and prod** | Prod defined no services at all. Applying it would have produced infrastructure with no application |
@@ -291,9 +331,12 @@ Ordered by what blocks the most.
 2. **Three on-chain routes** — `submit-deposit`, `record-withdrawal`,
    `manage-bnb-withdrawal`. All blocked on the contract, which is blocked on the
    faucet, which now wants ≥0.002 mainnet BNB.
-3. **The bot never replies.** `POST /telegram/webhook` was never built.
-   `/start` and `/admin` sent to @BingoNovaaBot do nothing. The Mini App works
-   because it launches from the menu button, not because the bot listens.
+3. ~~**The bot never replies.**~~ **Fixed 2026-08-08.** `POST
+   /telegram/webhook` answers `/start` and `/help` with a `web_app` button that
+   opens the Mini App inside Telegram. A bare URL would open a BROWSER, where
+   there is no `initData` and the player cannot log in -- so the link is a
+   button, never text. Registration is `scripts/register-telegram-webhook.sh`,
+   run AFTER deploy.
 4. **`settings.telegram_bot_username` is wrong** — says `Habeshabingo91bot`,
    the real bot is `@BingoNovaaBot`. Inherited. Nothing reads it today, which is
    why it went unnoticed; fix it before anything does.
@@ -305,14 +348,27 @@ Ordered by what blocks the most.
    has a per-player limiter underneath it so the endpoint is not unprotected, but
    **do not count the edge rule as a control** until someone reads the
    dashboard's rate-limiting analytics.
-7. **Admin auth is single factor.** Whoever holds the Telegram account holds the
-   admin API. The recommendation is TOTP on `telegram_users` — roughly 100 lines
-   with `otplib`, no new AWS service — and to put the second factor on the
-   ACTION, not the login. A session left open otherwise credits freely. The
-   README still says "Cognito with TOTP"; that was considered and rejected as a
-   whole second identity system for one feature of it.
+7. ~~**Admin auth is single factor.**~~ **Done 2026-08-08**, and the
+   recommendation this entry made was followed exactly: the second factor is on
+   the ACTION, not the login, because a session left open otherwise credits
+   freely. `db/20-post/016`.
+
+   Two departures from what was written here, both deliberate. It is NOT on
+   `telegram_users`: that table grants `SELECT` to `authenticated` at table
+   level and PostgREST serves every column a role may read, so the secret would
+   have been readable by the very session it defends against. It lives in
+   `admin_totp`, which has no policy and no grant for anon or authenticated.
+
+   And NOT with `otplib`. TOTP is a HMAC, a counter and a truncation — thirty
+   lines, with published RFC 6238 test vectors that pin every step, all six of
+   which `src/totp.test.mjs` runs. A dependency there is transitive code inside
+   the process holding `JWT_SECRET`, the database password and whatever KMS
+   returns.
 8. **Prod has never been applied.** Terraform is complete and plans cleanly.
-9. **13 SPA typecheck findings**, triaged below. They are a to-do list, not lint.
+9. **12 SPA typecheck findings**, triaged below. They are a to-do list, not
+   lint. (The count has been 17, then 13, now 12 in three different places in
+   this repository at once — `npm run typecheck` is the only source worth
+   believing, and nothing in CI gates on it.)
 
 ### Things that will bite you, learned expensively
 
@@ -1104,7 +1160,7 @@ access, belongs in PostgREST under RLS.
 | CORS `*` on every function | ✅ locked to one origin, falls back to `"null"` not `"*"` so misconfiguration fails closed |
 | Identity taken from the request body | ✅ replaced by proven identity + RLS |
 | No wallet signature challenge | ⬜ SIWE-style nonce, if wallet login is wanted |
-| Admin = one shared string | 🟡 replaced by a Telegram identity + `is_admin`, checked server-side on every request. **Still single-factor** — Cognito with TOTP and an `admin_audit_log` remain the target |
+| Admin = one shared string | ✅ a Telegram identity + `is_admin`, checked server-side on every request, **plus TOTP on the ACTION** — approving a deposit and completing a withdrawal require a code; reads, ending a game and settings do not. On the action rather than the login because a session left open otherwise credits freely. Not enforced until the operator enrols, so it cannot lock the queue on deploy |
 
 The admin gap is the significant one left. It is a shared string compared with
 `!==` in browser React state, and six inherited functions gate on it. None of
@@ -1331,13 +1387,15 @@ unique payout-reference guard. **That is the gate before prod.**
    Ask the operator.
 4. **Prod's first apply**, after 1. Reviewers are configured;
    `PROD_APPLY_ENABLED` is deliberately unset, so a merge plans prod and stops.
-5. **`POST /telegram/webhook`.** Requirements are in
-   `services/functions/src/index.js`. Needs a live bot token, so it cannot be
-   built blind, and registering a webhook at a route that does not exist takes
-   the bot down — build both halves together.
+5. ~~**`POST /telegram/webhook`.**~~ Done 2026-08-08. Both halves shipped
+   together, in the order that is safe: deploy the route (it refuses everything
+   until registered), then register.
 6. **`db/20-post/001_rds_deltas.sql:121`**, the blanket write grant. `012`
    neutralises it; removing it has a regression surface of the whole schema.
-7. **Admin auth is single-factor.** Cognito + TOTP and an `admin_audit_log`.
+7. ~~**Admin auth is single-factor.**~~ Done 2026-08-08 — TOTP on the action,
+   `db/20-post/016`. NOT Cognito: a whole second identity system for one feature
+   of it. Thirty lines of RFC 6238 verified against the standard's own test
+   vectors, and no new dependency inside the process that signs withdrawals.
 8. **Stage 2 items** already documented in place: `unhealthy_status 5xx` in the
    Caddyfile, a second instance, Multi-AZ RDS, and the crypto path.
 

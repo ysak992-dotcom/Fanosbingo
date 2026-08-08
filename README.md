@@ -42,8 +42,11 @@ countdown ticks — driven by a server-side game loop, not by a browser tab.
 | Joining and claiming | **working** — `/select-card` and `/claim-bingo`, identity and card layout derived server-side |
 | Bank deposit (TeleBirr / CBE) | **working** — player claims, operator approves against their own statement. No wallet, no contract |
 | Bank withdrawal | **working** — player requests, operator pays by hand and records the reference. `db/20-post/007` + `/withdrawals/*` |
-| Admin | Telegram identity + `is_admin`, single factor. **Reachable two ways:** `t.me/BingoNovaaBot/app?startapp=admin` in Telegram, or the Login Widget at `app.<domain>/admin` in a browser. Bootstrap route promotes only the first admin, then disarms |
-| Alerting | **working, and proven** — 12 alarms, all verified to reach a human by `scripts/verify-alarms.sh`. Until 2026-08-01 **no per-environment alarm could deliver at all**; see `modules/kms` |
+| Backups | **nightly `pg_dump` to S3, kept 30 days**, alarmed on absence. RDS point-in-time recovery is capped at **1 day** by the account plan, so these are the only recovery point older than 24 hours. See [RESTORE.md](RESTORE.md) |
+| Operator notifications | **per claim, to Telegram** — a deposit claim or withdrawal request reaches the operator in seconds. The 4-hour queue alarms remain as the backstop |
+| Telegram bot | **answers `/start` and `/help`** with a button that opens the Mini App inside Telegram |
+| Admin | Telegram identity + `is_admin`, **plus TOTP on money actions** (approve a deposit, complete a withdrawal). **Reachable two ways:** `t.me/BingoNovaaBot/app?startapp=admin` in Telegram, or the Login Widget at `app.<domain>/admin` in a browser. Bootstrap route promotes only the first admin, then disarms |
+| Alerting | **working, and proven** — 16 alarms in the account (12 per-environment, 2 account-wide detections, 2 created by the ECS capacity provider), verified to reach a human by `scripts/verify-alarms.sh`. Delivery is **email + Telegram**; SMS was built and does not deliver on this account. Until 2026-08-01 **no per-environment alarm could deliver at all**; see `modules/kms` |
 | Currency | **whole birr, integer, labelled ብር.** One row value = one birr. There is no sub-unit and no divisor |
 | Database authorization | **enforced** — EXECUTE is an allowlist, `telegram_users` is owner-scoped, game state is read-only to clients, verified by `probe-public-access.sh` |
 | Crypto (wallet login, BNB deposit/withdrawal) | **deferred, not removed** — every surface is behind `VITE_CRYPTO_ENABLED`, off by default. Ethiopian players overwhelmingly do not hold cryptocurrency, so birr is the currency that matters. Code, contract and KMS key all retained |
@@ -96,9 +99,9 @@ filed, and the operator pays it from the admin queue — which exercises
 | 2 | **Fix two stale `settings` rows** | `telegram_bot_username` says `Habeshabingo91bot` (the bot is `BingoNovaaBot`); `game_url` still points at `multiplayer-bingo-we-5btk.bolt.host`. Both editable in the admin Settings form |
 | 3 | **Amharic labels on money actions** | `DEPOSIT (ገቢ)` / `WITHDRAW (ወጪ)`. Deliberately **not** done by me — getting a money verb subtly wrong in a language you do not speak is worse than leaving it in English. Ask the operator for exact wording |
 | 4 | **Prod's first apply** | After 1. Requires the `prod` GitHub Environment reviewers (already configured) and `PROD_APPLY_ENABLED` (deliberately unset) |
-| 5 | **Telegram bot webhook** | `POST /telegram/webhook`. Must verify `X-Telegram-Bot-Api-Secret-Token` **strictly** — reject a *missing* header, since a forger simply omits it — and `setWebhook` must be re-registered **with** the secret *before* the check ships, or the bot goes silent. Needs a live bot token, so it cannot be built blind |
+| 5 | ~~**Telegram bot webhook**~~ | **Closed 2026-08-08.** `/start` and `/help` answer with a `web_app` button. Secret token checked strictly; registration is `scripts/register-telegram-webhook.sh`, run *after* deploy |
 | 6 | **Root-cause the blanket table grant** | `db/20-post/001_rds_deltas.sql:121` grants `authenticated` write on every table. `012` neutralises it for all current and future tables, but the grant itself remains. Removing it has a regression surface of the whole schema |
-| 7 | **Admin auth is single-factor** | A Telegram identity plus an `is_admin` flag. Fine for one operator; revisit before there are several. Cognito + TOTP and an `admin_audit_log` are the target |
+| 7 | ~~**Admin auth is single-factor**~~ | **Closed 2026-08-08.** TOTP on the *action* — approving a deposit and completing a withdrawal require a code; reads and settings do not. Not enforced until the operator enrols, so it cannot lock the queue on deploy. `decided_by` on every approval remains the audit trail |
 | 8 | **Reinstate `unhealthy_status 5xx`** in the Caddyfile, and the crypto path | Both are explicitly Stage-2 items. See the Caddyfile comments and `src/lib/features.ts` |
 
 ### Things that will bite you if you do not know them
@@ -299,14 +302,38 @@ an anti-abuse gate, and the dev wallet has nothing on either network.
 
 Bank deposits work today without it, so this no longer blocks players.
 
-**3. Build the bot webhook.** `POST /telegram/webhook` was never ported.
-`/start` to @BingoNovaaBot does nothing. Requirements are recorded in
-`services/functions/src/index.js` — verify the secret token strictly, and
-re-register with `secret_token` BEFORE deploying the check or the bot goes silent.
+**3. ~~Build the bot webhook.~~ Done 2026-08-08.** `POST /telegram/webhook`
+answers `/start` and `/help` with a **`web_app` button**, not a link — a bare URL
+opens a browser, where the Mini App has no `initData` and the player cannot log
+in. Authentication is `X-Telegram-Bot-Api-Secret-Token`, checked strictly: a
+*missing* header is refused, because a forger simply omits it.
 
-**4. Replace single-factor admin auth.** TOTP on `telegram_users`, and put the
-second factor on the **action** rather than the login — a session left open
-otherwise credits freely.
+Registration is a separate step, `scripts/register-telegram-webhook.sh`, and the
+order matters — deploy first, register second, or the bot goes silent.
+
+> Worth keeping: `verifyWebhookSecret` would have **thrown on Telegram's first
+> call**. It read `req.headers.get(...)`, the Fetch shape it was written for
+> under Deno; Express has no `.get()` on `req.headers`. Nothing caught it because
+> nothing called it, and its test builds a real `Request`. A test exercising a
+> shape production never presents is not covering the code.
+
+**4. ~~Replace single-factor admin auth.~~ Done 2026-08-08.** TOTP **on the
+action**, not the login: approving a deposit and completing a withdrawal ask for
+a code. Reads, ending a game and settings do not — six digits per action is a
+real cost to someone clearing an overnight queue, and it is worth paying only
+where money moves.
+
+Not enforced until enrolled, deliberately: enforcing on an un-enrolled admin
+would lock the deposit queue on deploy, causing the outage
+`deposits-waiting-too-long` exists to catch. Enrol in **Admin → Settings →
+Security**.
+
+> The secret lives in its own `admin_totp` table, not on `telegram_users`. The
+> first version used a column there and the migration's own assertion refused it:
+> that table grants `SELECT` to `authenticated` at **table** level, and PostgREST
+> serves every column a role may read — so
+> `/rest/v1/telegram_users?select=totp_secret` would have handed the secret to
+> the owner of that row, who is exactly the attacker with a stolen session.
 
 **5. Production.** Terraform is written and plans cleanly, never applied. Needs
 mainnet values and a funded wallet. Run the restore drill against prod once —
