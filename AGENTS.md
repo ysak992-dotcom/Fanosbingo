@@ -1,5 +1,13 @@
 # Fanos Bingo — Engineering Handover
 
+> **If you are an agent picking this up cold, read
+> [HANDOVER.md](HANDOVER.md) first.** This file is long and largely historical;
+> HANDOVER.md is the current state, the traps, and what is left, in one page.
+>
+> The single most useful habit it records: **when a document and the AWS account
+> disagree, the account is right.** Nearly every defect found in the last two
+> days was found by running the system, not by reading it.
+
 Orientation for whoever picks this up next, human or agent. Written to be read
 top to bottom once, then used as reference.
 

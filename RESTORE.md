@@ -1,5 +1,15 @@
 # Restoring the database
 
+> Part of the handover set: **[HANDOVER.md](HANDOVER.md)** ·
+> [README.md](README.md) · [AGENTS.md](AGENTS.md) ·
+> [infra/README.md](infra/README.md)
+>
+> The one thing on this page that is easiest to get wrong, and worst to get
+> wrong: **`--no-privileges` does not skip RLS policies.** Restore without
+> creating `anon`, `authenticated` and `service_role` first and all 32 policies
+> are silently dropped — a database that looks restored and has lost its entire
+> authorization layer.
+
 Two recovery paths exist and they answer different questions. Reach for the
 right one first — using the wrong one costs time you will not have.
 

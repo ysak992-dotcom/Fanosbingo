@@ -1,5 +1,21 @@
 # Fanos Bingo
 
+> ## 👉 New here? Read **[HANDOVER.md](HANDOVER.md)** first.
+>
+> It is the current state of the system in one page: what is live, what will
+> mislead you, and what is left. Five things in particular are not obvious and
+> have each cost real time —
+>
+> - **`dev` IS production.** Prod has never been applied; there is no staging.
+> - **The FREE plan's credits run out ~Nov 2026**, before the Jan 2027 expiry,
+>   and **no budget can see it** — credits absorb the bill before Cost Explorer.
+> - **RDS PITR is capped at 1 day** and cannot be raised; setting it higher
+>   fails the whole apply. Nightly dumps cover the gap — see [RESTORE.md](RESTORE.md).
+> - **A green test here has three times meant broken code**, because the double
+>   answered what the real dependency would refuse.
+> - **`npm run build` does not typecheck.** Run `npm run typecheck`.
+
+
 A real-time, multiplayer bingo game built as a Telegram Mini App with full on-chain integration on Binance Smart Chain (BSC). Players compete in live bingo rounds where the prize pool is distributed transparently through smart contracts.
 
 ---
@@ -46,7 +62,7 @@ countdown ticks — driven by a server-side game loop, not by a browser tab.
 | Operator notifications | **per claim, to Telegram** — a deposit claim or withdrawal request reaches the operator in seconds. The 4-hour queue alarms remain as the backstop |
 | Telegram bot | **answers `/start` and `/help`** with a button that opens the Mini App inside Telegram |
 | Admin | Telegram identity + `is_admin`, **plus TOTP on money actions** (approve a deposit, complete a withdrawal). **Reachable two ways:** `t.me/BingoNovaaBot/app?startapp=admin` in Telegram, or the Login Widget at `app.<domain>/admin` in a browser. Bootstrap route promotes only the first admin, then disarms |
-| Alerting | **working, and proven** — 16 alarms in the account (12 per-environment, 2 account-wide detections, 2 created by the ECS capacity provider), verified to reach a human by `scripts/verify-alarms.sh`. Delivery is **email + Telegram**; SMS was built and does not deliver on this account. Until 2026-08-01 **no per-environment alarm could deliver at all**; see `modules/kms` |
+| Alerting | **working, and proven** — 17 alarms in the account (13 per-environment, 2 account-wide detections, 2 created by the ECS capacity provider), verified to reach a human by `scripts/verify-alarms.sh`. Delivery is **email + Telegram**; SMS was built and does not deliver on this account. Until 2026-08-01 **no per-environment alarm could deliver at all**; see `modules/kms` |
 | Currency | **whole birr, integer, labelled ብር.** One row value = one birr. There is no sub-unit and no divisor |
 | Database authorization | **enforced** — EXECUTE is an allowlist, `telegram_users` is owner-scoped, game state is read-only to clients, verified by `probe-public-access.sh` |
 | Crypto (wallet login, BNB deposit/withdrawal) | **deferred, not removed** — every surface is behind `VITE_CRYPTO_ENABLED`, off by default. Ethiopian players overwhelmingly do not hold cryptocurrency, so birr is the currency that matters. Code, contract and KMS key all retained |
@@ -66,6 +82,11 @@ the whole loop, with no wallet anywhere in it.
 ---
 
 ## Handover — read this first
+
+> **Superseded for current state by [HANDOVER.md](HANDOVER.md)** (2026-08-09).
+> This section is the 2026-08-01/02 snapshot and is kept because its task
+> ordering and its "things that will bite you" are still accurate. Where the two
+> disagree, HANDOVER.md is newer.
 
 Everything below was found or built on **2026-08-01/02**. dev is fully deployed
 and has been exercised by a real player with real money; **prod has never been

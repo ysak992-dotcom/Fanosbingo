@@ -1,12 +1,26 @@
 # Fanos Bingo — Infrastructure
 
+> **Start with [../HANDOVER.md](../HANDOVER.md).** Three things about this
+> infrastructure are not what they look like:
+>
+> - **`dev` is production.** It carries prod's RDS protections and its destroy
+>   path is guarded twice. Prod has never been applied.
+> - **RDS PITR is capped at 1 day by the account plan.** Raising
+>   `backup_retention_period` fails the apply, not just the setting.
+> - **The spend budgets cannot see the FREE-plan credit burn.** Spend is zero;
+>   credits absorb it. `free-tier-runway.yml` is what actually watches the cliff.
+>
+> An infrastructure apply is also a **deploy** — it rolls `caddy` and
+> `functions` onto whatever image SSM names, and briefly drops the site.
+
 Terraform for the AWS build. Target: **~$30/month** at ~200 users, structured so
 growth is a configuration change rather than a rewrite.
 
-**State, ✅ verified 2026-07-29:** `dev` and `account` are applied and healthy —
-five services `ACTIVE 1/1`, ten alarms `OK`, CloudTrail logging, a dev plan
-reporting no changes, and the Mini App serving at `app.<domain>`. **`prod` is
-written and plans cleanly but has never been applied.**
+**State, ✅ verified 2026-08-09:** `dev` and `account` are applied and healthy —
+five services `ACTIVE 1/1`, **17 alarms** in the account, CloudTrail logging, a
+dev plan reporting no changes, and the Mini App serving at `app.<domain>`.
+**`prod` is written and plans cleanly but has never been applied**, and `dev` is
+therefore the live environment.
 
 ### Three hostnames, and what each one is
 

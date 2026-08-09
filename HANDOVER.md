@@ -1,0 +1,284 @@
+# Handover — read this before changing anything
+
+**Written 2026-08-09.** For whoever picks this up next, human or agent.
+
+This is a **real-money game with live players**. A deposit was made by TeleBirr,
+approved, spent on a round, and a false bingo claim was correctly refused — all
+by a real person with real birr. Treat every change accordingly.
+
+---
+
+## The five things that will mislead you
+
+Read these first. Each one cost real time or a real incident.
+
+### 1. `dev` IS production. There is no other environment.
+
+The Terraform state bucket holds `account/` and `dev/` and nothing else.
+`https://api.yisakmesifin.org` is served by `fanosbingo-dev`. **Prod has never
+been applied.**
+
+So `dev` carries prod's protections — deletion protection, required final
+snapshot, `apply_immediately = false` — and `terraform destroy` on it is guarded
+twice. Anything that reads "dev is disposable" is stale; correct it when you see
+it.
+
+There is **no staging**. Every change you make ships to the environment players
+are using.
+
+### 2. The account is on the FREE plan, and credits run out before the expiry
+
+```
+plan          FREE / ACTIVE
+credits       ~$150, falling ~$1.30/day
+expiry        2027-01-14
+```
+
+Two deadlines. **The credits bind first — roughly late November 2026**, and
+every document quotes the January date. On a FREE plan, exhausting credits
+**suspends resources**; it does not bill.
+
+**No budget can see this.** Spend is zero because credits absorb the bill before
+Cost Explorer sees it (measured: `-0.0000001/day` while credits fell $1.30/day).
+The only signal is `aws freetier get-account-plan-state`, published daily by
+`.github/workflows/free-tier-runway.yml` and alarmed below $50.
+
+The plan is to stay on FREE. That decision is the operator's and is current.
+
+### 3. RDS point-in-time recovery is capped at **1 day**, and cannot be raised
+
+```
+FreeTierRestrictionError: The specified backup retention period exceeds the
+maximum available to free tier customers.
+```
+
+Retried with `2` and refused identically — the ceiling is exactly 1. **Do not
+set `backup_retention_period` above 1 in `environments/dev`.** It does not fail
+quietly; it fails the whole apply.
+
+The mitigation is nightly `pg_dump` to S3, kept 30 days
+(`.github/workflows/db-backup.yml`). See **[RESTORE.md](RESTORE.md)** before you
+need it — especially the part about creating the three roles before restoring.
+
+### 4. A test being green does not mean the code works
+
+Three separate defects shipped here **with passing tests**, because the test
+double answered questions the real dependency would have refused:
+
+- a pool double that returned rows for any SQL, so a handler read columns that
+  do not exist from a table that does not hold them
+- a webhook verifier tested against a Fetch `Request`, when production presents
+  an Express `req` with no `.get()` on `headers`
+- a CORS allow-list that omitted a header the server reads, so the browser
+  stripped it before sending
+
+Guards now exist for each, and **each was verified by reintroducing the exact
+bug and watching it fail**. Do the same for any guard you add. A test that
+cannot fail is worse than no test.
+
+### 5. `npm run build` does not typecheck
+
+Vite does not run TypeScript. A `ReferenceError` on the main player path passed
+`npm run build` and was caught only by `npm run typecheck`.
+
+**Run `npm run typecheck` before shipping SPA changes.** It is advisory in CI
+(11 findings, all unused-variable noise) and should be promoted to a gate once
+those are read — see Open work.
+
+---
+
+## How to change things
+
+Everything reaches AWS through **one path**: `.github/workflows/terraform.yml`,
+via OIDC. There is no AWS access key in this repository.
+
+```
+infra change   →  PR (plan is commented) → merge → gh workflow run terraform.yml -f action=apply
+service change →  PR → merge → gh workflow run deploy-services.yml -f service=<name>
+schema change  →  PR → merge → gh workflow run db-migrate.yml -f dry_run=true, then false
+```
+
+**Deploy order is migrations → `functions` → `caddy`.** Reversed at the first
+step there is a window where a player can mint a balance *and* cash it out.
+
+`terraform apply` against dev **also rolls `caddy` and `functions`** onto
+whatever image the SSM pointer names. That is the pointer mechanism working, not
+drift — but an infrastructure apply is also a deploy, and it briefly drops the
+site (one instance, static host ports, `deployment_minimum_healthy_percent = 0`).
+Check `ActiveGames` before applying.
+
+### Verifying, rather than assuming
+
+| Question | Command |
+|---|---|
+| Can a player reach the site? | `curl -s -o /dev/null -w '%{http_code}' https://api.yisakmesifin.org/healthz` |
+| Do alarms reach a human? | `./scripts/verify-alarms.sh dev --fire <alarm>` — **believe the device, not the console** |
+| Is a permission actually granted? | `aws iam simulate-principal-policy` — it caught two false pages here |
+| Did a backup land? | `aws s3 ls s3://fanosbingo-backups-<account>/dev/` |
+| What is the free-tier runway? | `aws freetier get-account-plan-state` |
+
+---
+
+## Open work
+
+Ordered by what I would do next. None is blocked on anything except the last.
+
+### 1. "Back to lobby" does not work — **STILL BROKEN after three attempts**
+
+**Confirmed still broken by the operator on 2026-08-09**, after all three fixes
+below were deployed. Do not assume any of them worked. Reproduce it first.
+
+**Symptom.** In a running round the player sees the "Spectator Mode" panel with a
+**Back to lobby** button. Tapping it does not return to the lobby — the view
+stays in the game, and in at least one observation flipped to showing the
+player's own card and a BINGO button.
+
+**Three hypotheses, all deployed, none sufficient.** Listed so you do not spend
+the time again:
+
+1. *"There is no exit at all."* — `GameRoom`'s only exit was automatic
+   (`onReturnToLobby` fires when the game **finishes**). Added a Back button for
+   spectators. Commit `cf8e9fd`. **Did not fix it.**
+
+2. *"The auto-enter effect overrides the exit."* — `App.tsx` polls every 10s and,
+   for any `playing` game, does `setGameId(...)` + `setGameStarted(true)`
+   unconditionally, undoing the handler within seconds. Added a
+   `dismissedGameIdRef` so a deliberate exit is honoured — but **only for
+   somebody with no player row**, since a player should stay in the round they
+   paid for. Commit `00b4e00`. **Did not fix it**, because the operator testing
+   it *was* a player in that round.
+
+3. *"A player should never be offered Watch in the first place."* — the banner was
+   shown whenever a round was `playing`, including to somebody already holding a
+   card; and `handleSpectateGame` sets `gameId` but **not** `playerId`, so a
+   player tapping Watch renders as a fake spectator. Hid the banner via
+   `isAlreadyInThisGame` in `Lobby.tsx`. Commit `bf4fa1d`. **Did not fix it.**
+
+**What is therefore still unexplained.** With (3) deployed, a player should never
+reach the spectator panel at all — yet the panel is still being seen. That means
+at least one of these is true, and none has been checked:
+
+- `players` in `Lobby.tsx` is empty or stale while a round is `playing`, so
+  `isAlreadyInThisGame` evaluates false for somebody who *is* a player
+- the panel is reached through the **auto-enter effect**, not the Watch button —
+  the effect sets `playerId` to `null` when it finds no player row, and
+  `GameRoom` renders `isSpectator` from `!playerId || !currentPlayer`
+- `dismissedGameIdRef.current` is not equal to `activeGameId` at the moment the
+  guard runs, so the dismissal never applies
+- the deployed bundle was not the one tested (the Mini App caches aggressively —
+  the entry hash changes on each build, so check it)
+
+**How I would approach it next, in this order:**
+
+1. **Reproduce with the console open**, and log `playerId`, `currentPlayer`,
+   `isSpectator`, `dismissedGameIdRef.current` and `activeGameId` on every render
+   and every poll. Every hypothesis above is distinguishable from those five
+   values, and none of them can be settled by reading the code — I tried three
+   times and was wrong three times.
+2. Establish **how the panel is being reached**: the Watch button, or the
+   auto-enter effect. They are different bugs.
+3. Only then change code.
+
+**The deeper design question**, worth settling before patching further: `App.tsx`
+force-enters *everyone* into a running game on a 10-second poll. That is right
+for a player with a card and wrong for everyone else, and every attempt above is
+working around it rather than fixing it. Consider making entry explicit — a
+player is entered because they joined, not because a poll noticed a game — and
+the button follows naturally.
+
+**Files:** `src/App.tsx` (auto-enter effect ~line 122, `handleReturnToLobby`,
+`handleSpectateGame`), `src/components/Lobby.tsx` (watch banner,
+`isAlreadyInThisGame`), `src/components/GameRoom.tsx` (`isSpectator`, the
+spectator panel and its Back button).
+
+### 2. Promote `npm run typecheck` to a CI gate
+
+It just caught a runtime crash on the busiest code path while `npm run build`
+passed. 11 findings remain, all `TS6133` unused declarations. Read each — one of
+them found dead spectator plumbing that turned out to be a real feature gap —
+then make the job blocking.
+
+### 3. Nothing lints the SPA in CI
+
+`npm run lint` exists; no workflow runs it. Same gap that was already fixed for
+`scripts/`. One pre-existing error (`recentActivity` in `Admin.tsx`).
+
+### 4. Zero capacity data
+
+`stress-test/k6-spike-test.js` targets 400 concurrent and **has never run**; the
+`k6` npm entry is an autocomplete stub, so `npm run stress:*` cannot work as
+written. You do not know what breaks first: the pool is `max: 5` on a
+`t4g.small` shared with four other containers.
+
+Load-testing means load-testing **production**. Do it small and off-peak.
+
+### 5. Deferred on cost, by the operator's decision
+
+Not oversight — recorded so nobody re-derives them:
+
+- **GuardDuty** — a few dollars a month; the detection that would catch misuse
+  of the admin IAM user
+- **AWS SMS alerting** — built, applied, and delivers nothing: the account is not
+  enrolled in AWS End User Messaging. **Not** a restriction on Ethiopian
+  numbers; it would fail for a US number identically
+- **Backup retention > 1 day, Multi-AZ, a second instance** — all need the paid
+  plan
+
+### 6. Untouched by request
+
+An IAM user holds `AdministratorAccess` with a console password. Its MFA state
+is worth checking (`aws iam get-credential-report`) — it bypasses every control
+in `infra/environments/account`. **The operator asked that this be left alone.**
+
+---
+
+## What exists now that the older documents do not mention
+
+Built 2026-08-08/09. If a document contradicts this list, this list is right.
+
+| | |
+|---|---|
+| Second factor on money actions | TOTP on the **action**, not the login. Approve a deposit / complete a withdrawal require a code; reads and settings do not. Enrol at **Admin → Settings → Security**. `db/20-post/016` |
+| Nightly backups | `pg_dump` → S3, 30 days, alarmed on absence. [RESTORE.md](RESTORE.md) |
+| Operator notifications | A deposit claim or withdrawal request reaches Telegram in seconds. The 4-hour queue alarms remain as the backstop |
+| The bot answers | `/start` and `/help`, with a `web_app` button that opens the Mini App **inside** Telegram |
+| External health check | Route 53 probes `api.<domain>/healthz` from outside AWS. **Creates no DNS** — Cloudflare stays authoritative |
+| Free-tier runway alarm | The only alarm no budget can replace |
+| Spectator mode | Reachable for the first time — see Open work #1 |
+| Alarms | 17 in the account; delivery is **email + Telegram** |
+
+---
+
+## Inherited documents
+
+`SPECTATOR_MODE_IMPLEMENTATION.md`, `CRYPTO_DEPOSIT_SETUP.md`,
+`REALTIME_ARCHITECTURE.md`, `USER_SMS_SUBMISSIONS_GUIDE.md` and their siblings
+predate the AWS rebuild and describe a **hosted Supabase project that does not
+exist here**. Most carry a banner saying so.
+
+Their *design reasoning* is often still worth reading. Their *operational steps*
+are not — anything mentioning `supabase.co`, edge-function deployment or
+`SUPABASE_URL` does not apply.
+
+Current state lives in: **[README.md](README.md)** ·
+**[AGENTS.md](AGENTS.md)** · **[infra/README.md](infra/README.md)** ·
+**[RESTORE.md](RESTORE.md)** · this file.
+
+---
+
+## The habit that would have saved the most time
+
+Nearly every defect in the last two days was found by **running the system**,
+not by reading it — and several were introduced by assuming rather than
+checking:
+
+- a workflow moved to a scoped role without verifying the role could still do
+  what the workflow needed. **Twice**, one commit apart, each producing a false
+  "backup FAILED" about a backup that had succeeded
+- a `sed` that produced invalid JSON and reported "could not parse"
+- a confirmation step that reported a field which cannot answer the question it
+  was labelled with
+
+When you change *who* runs something, re-verify *everything* it does. When you
+add a check, prove it fails on the bug it exists to catch. And when a document
+and the account disagree, **the account is right** — go and look.
