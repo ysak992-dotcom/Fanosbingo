@@ -467,6 +467,24 @@ export function Lobby({ onJoinGame, onSpectateGame, telegramUser }: LobbyProps) 
     }
   }, [players, telegramUser]);
 
+  // Is the viewer already holding a card in the running game?
+  //
+  // THIS IS WHY "Back to lobby" LOOKED BROKEN, and it was not the button.
+  //
+  // The watch banner was offered whenever a round was `playing`, including to
+  // somebody already IN that round. handleSpectateGame sets gameId and not
+  // playerId, so a player who tapped Watch entered GameRoom with playerId null
+  // and was shown "Spectator Mode" while holding a card. The auto-enter effect
+  // in App.tsx then resolved their real player row, the view flipped to their
+  // card mid-session, and "Back to lobby" could not work -- that effect
+  // deliberately keeps a PLAYER in the round they paid for.
+  //
+  // So the exit was never reachable for them, and the whole loop started here:
+  // offering to spectate a game they are playing.
+  const isAlreadyInThisGame = Boolean(
+    telegramUser && players.some((p) => p.telegram_user_id === telegramUser.id),
+  );
+
   const updateCountdown = async () => {
     if (!activeGame) return;
     const now = getSyncedTime();
@@ -1002,7 +1020,7 @@ export function Lobby({ onJoinGame, onSpectateGame, telegramUser }: LobbyProps) 
             policies for `public` on waiting/playing/finished rows. 008 and 012
             restricted WRITES, not reads, so nothing has to be opened up for
             this. */}
-        {activeGame?.status === 'playing' && (
+        {activeGame?.status === 'playing' && !isAlreadyInThisGame && (
           <div className={`rounded-xl p-3 sm:p-4 mb-3 border-l-4 transition-colors duration-300 ${
             isDarkMode
               ? 'bg-blue-900/30 border-blue-400 text-blue-100'
