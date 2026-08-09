@@ -985,6 +985,42 @@ export function Lobby({ onJoinGame, onSpectateGame, telegramUser }: LobbyProps) 
           </div>
         )}
 
+        {/* A GAME IS ALREADY RUNNING, so watching is the only thing left to do.
+            
+            The number grid below is disabled while status is 'playing' -- a
+            player cannot join a round in progress. Until now that was the end of
+            it: the lobby simply refused, with nothing to do but wait.
+            
+            Spectator mode was BUILT for this and never reachable. GameRoom has
+            carried the whole thing since it was written -- `isSpectator`, the
+            "Watching as Spectator" banner, the suppressed card -- and App.tsx
+            passes `onSpectateGame` down. Lobby destructured the prop and never
+            called it, so the feature existed everywhere except the one place a
+            player could reach it.
+            
+            Reads are already permitted: `games` and `players` carry SELECT
+            policies for `public` on waiting/playing/finished rows. 008 and 012
+            restricted WRITES, not reads, so nothing has to be opened up for
+            this. */}
+        {activeGame?.status === 'playing' && (
+          <div className={`rounded-xl p-3 sm:p-4 mb-3 border-l-4 transition-colors duration-300 ${
+            isDarkMode
+              ? 'bg-blue-900/30 border-blue-400 text-blue-100'
+              : 'bg-blue-50 border-blue-500 text-blue-900'
+          }`}>
+            <p className="text-sm sm:text-base font-bold">A round is already in progress</p>
+            <p className="text-xs sm:text-sm mt-1 opacity-90">
+              You cannot join until it finishes — but you can watch the numbers being called.
+            </p>
+            <button
+              onClick={() => onSpectateGame(activeGame.id)}
+              className="mt-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+            >
+              👀 Watch this round
+            </button>
+          </div>
+        )}
+
         {/* Number Selection Grid */}
         <div className={`rounded-xl shadow-lg p-3 sm:p-4 mb-3 transition-colors duration-300 ${isDarkMode ? 'bg-gray-800/95 border border-gray-700/50' : 'bg-white border border-gray-100'}`}>
           <div className="flex items-center justify-between mb-3">

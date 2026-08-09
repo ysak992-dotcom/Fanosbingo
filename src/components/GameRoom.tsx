@@ -453,6 +453,29 @@ export function GameRoom({ gameId, playerId, onReturnToLobby }: GameRoomProps) {
               <p className={`text-xs sm:text-sm ${isDarkMode ? 'text-blue-200' : 'text-blue-700'}`}>
                 You can join the next game from the lobby after this one finishes!
               </p>
+
+              {/* A WAY OUT. Until this existed the only exit from GameRoom was
+                  automatic -- onReturnToLobby fires when the game FINISHES.
+                  That is fine for a player, who is committed to the round they
+                  paid for. It traps a spectator, who tapped "Watch" out of
+                  curiosity and then cannot leave until strangers finish playing.
+
+                  Offered only to spectators: a player leaving mid-round would
+                  abandon a card they have already been charged for, and
+                  `/deselect-card` exists precisely because that has to be a
+                  deliberate action with a refund attached, not a back button. */}
+              {onReturnToLobby && (
+                <button
+                  onClick={onReturnToLobby}
+                  className={`mt-3 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+                    isDarkMode
+                      ? 'bg-blue-600 text-white hover:bg-blue-500'
+                      : 'bg-blue-600 text-white hover:bg-blue-700'
+                  }`}
+                >
+                  Back to lobby
+                </button>
+              )}
             </div>
           )}
 
