@@ -201,9 +201,27 @@ jobs:
           # ---------------------------------------------------------------
           aws s3 cp "$LOCAL" "s3://${BUCKET}/${KEY}" --only-show-errors
 
-          # Confirm from the SERVICE, not from the exit code of the upload.
-          REMOTE="$(aws s3api head-object --bucket "$BUCKET" --key "$KEY" \
-            --query ContentLength --output text)"
+          # Confirm from the SERVICE, not from the exit code of the upload --
+          # but with LIST, not HEAD.
+          #
+          # head-object maps to s3:GetObject, which this role deliberately does
+          # NOT have: a nightly job has no reason to be able to read the ledger
+          # back out of S3, and that restriction is the point of the scoping.
+          #
+          # So the confirmation needed the one permission the design refuses to
+          # grant, and the result was a job that uploaded the dump successfully
+          # and then reported "Database backup FAILED" -- including for the
+          # 04:00 scheduled run, whose dump is sitting in the bucket. A false
+          # page about a real backup is the fastest way to teach somebody to
+          # ignore the alarm.
+          #
+          # list-objects-v2 filtered to the exact key answers the same question
+          # -- did an object of the right size arrive -- using s3:ListBucket,
+          # which IS granted, under a prefix condition scoped to this
+          # environment. Verified with the IAM simulator: GetObject
+          # implicitDeny, ListBucket with the prefix context allowed.
+          REMOTE="$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$KEY" \
+            --query 'Contents[0].Size' --output text)"
           if [ "$REMOTE" != "$SIZE" ]; then
             echo "::error::Uploaded ${REMOTE} bytes but the dump is ${SIZE}."
             exit 1
