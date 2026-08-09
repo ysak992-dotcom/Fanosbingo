@@ -295,6 +295,31 @@ the button follows naturally.
 `isAlreadyInThisGame`), `src/components/GameRoom.tsx` (`isSpectator`, the
 spectator panel and its Back button).
 
+### 2. Two `settings` rows still hold inherited values — **operator action**
+
+Verified against the database on 2026-08-09, not inferred:
+
+```
+game_url              = https://multiplayer-bingo-we-5btk.bolt.host/
+telegram_bot_username = Habeshabingo91bot          (the bot is @BingoNovaaBot)
+```
+
+Both are editable in **Admin → Settings**. The panel was saved on 2026-08-08 but
+these two fields were not changed, so a `setting_updated` log line is not
+evidence that a value is current — check the row.
+
+`game_url` is now **refused** by the bot because `bolt.host` is not a host this
+deployment serves, so `/start` falls back to `app.<domain>` and logs
+`game_url_rejected`. Nothing is broken. But the row should be corrected to the
+URL you actually want players sent to, and until it is, that setting does
+nothing.
+
+> **The table is keyed on `id`, not `key`.** Anything querying
+> `WHERE key = '...'` throws `column "key" does not exist`. The webhook did
+> exactly that and the error was swallowed by a fallback, so the setting was
+> silently ignored while a comment claimed the operator could change the link
+> without a deploy.
+
 ### 2. Promote `npm run typecheck` to a CI gate
 
 It just caught a runtime crash on the busiest code path while `npm run build`

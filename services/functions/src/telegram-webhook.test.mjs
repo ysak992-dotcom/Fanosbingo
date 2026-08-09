@@ -55,8 +55,19 @@ const capture = () => {
   return impl;
 };
 
+// The double REJECTS `WHERE key =`, exactly as the real table does.
+//
+// The handler queried a column that does not exist -- settings is keyed on
+// `id` -- and threw on every call. The catch swallowed it, the fallback was
+// used, and nothing ever looked wrong: the degraded path is a correct welcome
+// message. A double that answers any query would have kept that hidden.
 const poolWith = (gameUrl) => ({
-  query: async () => ({ rows: gameUrl ? [{ value: gameUrl }] : [] }),
+  query: async (sql) => {
+    if (/WHERE\s+key\s*=/i.test(sql)) {
+      throw new Error('column "key" does not exist');
+    }
+    return { rows: gameUrl ? [{ value: gameUrl }] : [] };
+  },
 });
 
 const build = (f, pool = poolWith(null)) =>
@@ -192,6 +203,38 @@ const build = (f, pool = poolWith(null)) =>
   const grp = f.sent[1].body.reply_markup.inline_keyboard[0][0];
   check('a GROUP gets a plain url button, which Telegram accepts there', Boolean(grp.url));
   check('and no web_app button, which it would reject', grp.web_app === undefined);
+}
+
+// --- a game_url pointing somewhere else is refused ------------------------
+//
+// The live value at the time of this fix was an INHERITED host from the
+// upstream project:
+//
+//   game_url = https://multiplayer-bingo-we-5btk.bolt.host/
+//
+// Fixing the query alone would have started sending every new player there.
+// A settings row must not be able to aim the bot's front door at an arbitrary
+// host, so only https on t.me or this deployment's own domain is honoured.
+{
+  const f = capture();
+  const h = build(f, poolWith('https://multiplayer-bingo-we-5btk.bolt.host/'));
+  await h(mkReq(SECRET, { message: { text: '/start', chat: { id: 1, type: 'private' } } }), mkRes());
+  await sleep(10);
+
+  const b = f.sent[0].body.reply_markup.inline_keyboard[0][0];
+  const used = b.web_app?.url ?? b.url;
+  check('a foreign host in game_url is REFUSED', used.includes('bolt.host') === false);
+  check('and the fallback is used instead', used.includes('app.example.test'));
+
+  // http, and a lookalike domain, must both fail.
+  for (const bad of ['http://app.example.test', 'https://app.example.test.evil.com']) {
+    const g = capture();
+    const hh = build(g, poolWith(bad));
+    await hh(mkReq(SECRET, { message: { text: '/start', chat: { id: 1, type: 'private' } } }), mkRes());
+    await sleep(10);
+    const btn2 = g.sent[0].body.reply_markup.inline_keyboard[0][0];
+    check(`${bad} is refused`, (btn2.web_app?.url ?? btn2.url) === 'https://app.example.test');
+  }
 }
 
 console.log(failures ? `\n${failures} assertion(s) failed.` : '\nAll webhook tests passed.');

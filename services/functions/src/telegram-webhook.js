@@ -47,16 +47,72 @@ import { sendTelegramMessage } from './notify.js';
  * always correct even if slightly worse: a t.me link opens inside Telegram,
  * where a bare https link opens a browser.
  */
-async function resolveGameUrl(pool, fallback) {
+/**
+ * The column is `id`, NOT `key`.
+ *
+ * This read `WHERE key = 'game_url'` and therefore threw
+ * `column "key" does not exist` on every call. The catch below swallowed it and
+ * the fallback was used every time, so the setting was silently ignored -- and
+ * the comment above claimed the operator could change the link without a deploy,
+ * which was not true.
+ *
+ * Found by querying the database while checking a documentation claim, not by
+ * anything failing. It could not fail visibly: the degraded path is a correct
+ * welcome message.
+ */
+const GAME_URL_QUERY = "SELECT value FROM settings WHERE id = 'game_url' LIMIT 1";
+
+/**
+ * Only a URL that belongs to this system is honoured.
+ *
+ * FIXING THE QUERY ALONE WOULD HAVE MADE THINGS WORSE. At the time of the fix
+ * the live value was
+ *
+ *   game_url = https://multiplayer-bingo-we-5btk.bolt.host/
+ *
+ * an inherited host from the upstream project that this deployment has nothing
+ * to do with. The broken query was the only reason /start was not already
+ * sending every new player there.
+ *
+ * A settings row should not be able to point the bot's front door at an
+ * arbitrary host. So the value is honoured only when it is https and its host is
+ * `t.me` or the domain this deployment serves; anything else falls back and says
+ * so in the log. That keeps the operator's ability to move the link between
+ * their own surfaces -- app.<domain>, a t.me deep link -- without making the row
+ * a redirect anybody with admin can aim anywhere.
+ */
+function isOurUrl(candidate, fallback) {
   try {
-    const { rows } = await pool.query(
-      "SELECT value FROM settings WHERE key = 'game_url' LIMIT 1",
-    );
-    const url = typeof rows[0]?.value === 'string' ? rows[0].value.trim() : '';
-    return url || fallback;
+    const url = new URL(candidate);
+    if (url.protocol !== 'https:') return false;
+    if (url.hostname === 't.me' || url.hostname === 'telegram.me') return true;
+
+    // Same registrable domain as the app we serve, so app.<domain> and
+    // <domain> both pass while a lookalike does not.
+    const ours = new URL(fallback).hostname.split('.').slice(-2).join('.');
+    return url.hostname === ours || url.hostname.endsWith(`.${ours}`);
   } catch {
+    return false;
+  }
+}
+
+async function resolveGameUrl(pool, fallback, log) {
+  try {
+    const { rows } = await pool.query(GAME_URL_QUERY);
+    const url = typeof rows[0]?.value === 'string' ? rows[0].value.trim() : '';
+
+    if (!url) return fallback;
+
+    if (!isOurUrl(url, fallback)) {
+      log?.warn?.({ event: 'game_url_rejected', configured: url });
+      return fallback;
+    }
+
+    return url;
+  } catch (err) {
     // The webhook must answer even when the database does not. A welcome
     // pointing at the app origin is worth more than an unanswered /start.
+    log?.warn?.({ event: 'game_url_lookup_failed', error: err.message });
     return fallback;
   }
 }
@@ -158,7 +214,7 @@ export function createTelegramWebhookHandler({
       // every stray message in a group it was added to is a nuisance.
       if (command !== '/start' && command !== '/help') return;
 
-      const url = await resolveGameUrl(pool, appUrl);
+      const url = await resolveGameUrl(pool, appUrl, req.log);
       const body = command === '/start' ? WELCOME : HELP;
 
       await sendTelegramMessage(
