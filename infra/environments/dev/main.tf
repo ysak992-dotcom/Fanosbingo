@@ -1,18 +1,19 @@
 /**
  * Fanos Bingo — dev environment.
  *
- * Dev is NOT always-on. Stand it up when you need to test a migration or a
- * risky change, then tear it down:
+ * THE HEADER BELOW USED TO SAY "stand it up, test, tear it down". Do not.
  *
- *   terraform apply
- *   ...test against BSC testnet...
- *   terraform destroy
+ * This is the development and staging environment -- prod is planned and has
+ * never been applied -- but it is the ONLY environment that exists, it is what
+ * api.<domain> resolves to, and real birr has moved through it. Destroying it
+ * destroys the only copy, which is why the RDS block below carries prod's
+ * protections and why terraform.yml guards the destroy path twice.
  *
- * Idle cost after destroy is effectively zero. Leaving it running costs about
- * the same as prod (~$30/mo) and would double the budget.
+ * It is therefore always-on, and the ~$30/mo is the cost of the system running
+ * rather than of somebody forgetting to tear it down.
  *
- * Modules are wired in here as each is built.
- * Current: vpc, security_groups, kms, ssm, iam.
+ * When prod exists and serves the domain, this becomes disposable again -- and
+ * that is the change that should revert the RDS block, not a tidy-up beforehand.
  */
 
 locals {
@@ -110,7 +111,7 @@ module "rds" {
   security_group_id = module.security_groups.rds_security_group_id
   kms_key_arn       = module.kms.main_key_arn
 
-  # DEV IS NOT DISPOSABLE. It is the production database.
+  # DEV IS NOT DISPOSABLE. It is the ONLY database.
   #
   # These four used to read false / true / true / 1, under the comment "Dev is
   # disposable: allow destroy without ceremony. Prod inverts all three." That

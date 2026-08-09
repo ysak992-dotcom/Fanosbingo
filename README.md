@@ -6,7 +6,9 @@
 > mislead you, and what is left. Five things in particular are not obvious and
 > have each cost real time —
 >
-> - **`dev` IS production.** Prod has never been applied; there is no staging.
+> - **`dev` is the only environment and serves the live domain.** It is dev/staging,
+>   not production — but prod has never been applied, so it is the only copy and
+>   is protected accordingly. There is no separate staging.
 > - **The FREE plan's credits run out ~Nov 2026**, before the Jan 2027 expiry,
 >   and **no budget can see it** — credits absorb the bill before Cost Explorer.
 > - **RDS PITR is capped at 1 day** and cannot be raised; setting it higher

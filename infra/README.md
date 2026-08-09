@@ -3,8 +3,9 @@
 > **Start with [../HANDOVER.md](../HANDOVER.md).** Three things about this
 > infrastructure are not what they look like:
 >
-> - **`dev` is production.** It carries prod's RDS protections and its destroy
->   path is guarded twice. Prod has never been applied.
+> - **`dev` is the only environment that exists**, and it serves the live domain.
+>   It is dev/staging rather than production, but it is the only copy — so it
+>   carries prod's RDS protections and its destroy path is guarded twice.
 > - **RDS PITR is capped at 1 day by the account plan.** Raising
 >   `backup_retention_period` fails the apply, not just the setting.
 > - **The spend budgets cannot see the FREE-plan credit burn.** Spend is zero;

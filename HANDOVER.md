@@ -12,19 +12,34 @@ by a real person with real birr. Treat every change accordingly.
 
 Read these first. Each one cost real time or a real incident.
 
-### 1. `dev` IS production. There is no other environment.
+### 1. `dev` is the ONLY environment, and it serves the live domain
 
-The Terraform state bucket holds `account/` and `dev/` and nothing else.
-`https://api.yisakmesifin.org` is served by `fanosbingo-dev`. **Prod has never
-been applied.**
+Verified in the account, not inferred:
 
-So `dev` carries prod's protections — deletion protection, required final
-snapshot, `apply_immediately = false` — and `terraform destroy` on it is guarded
-twice. Anything that reads "dev is disposable" is stale; correct it when you see
-it.
+```
+terraform state       account/  dev/          (nothing else)
+EIP behind the domain fanosbingo-dev-app
+data                  4 telegram_users · 7 games · 3 deposit_requests
+```
 
-There is **no staging**. Every change you make ships to the environment players
-are using.
+**`dev` is the development and staging environment — it is not "production", and
+prod is planned.** But it is the only environment that exists, it is what
+`api.yisakmesifin.org` resolves to, and real birr has moved through it: a
+TeleBirr deposit was approved by an operator, spent on a round, and a false
+bingo claim correctly refused.
+
+**So it must be protected like production until prod exists**, and it is:
+deletion protection, a required final snapshot, `apply_immediately = false`, and
+a `terraform destroy` path guarded twice. That is a consequence of it being the
+only copy, not a claim about its status.
+
+Two practical consequences:
+
+- **There is no separate staging.** A change tested here is tested in the place
+  players use. Prefer verifying against the account (`simulate-principal-policy`,
+  a `--show` dry run, a plan) over trying something to see what happens.
+- Anything that reads **"dev is disposable, tear it down"** predates this and is
+  stale — the destroy guards will refuse it anyway.
 
 ### 2. The account is on the FREE plan, and credits run out before the expiry
 
@@ -116,6 +131,95 @@ Check `ActiveGames` before applying.
 | Is a permission actually granted? | `aws iam simulate-principal-policy` — it caught two false pages here |
 | Did a backup land? | `aws s3 ls s3://fanosbingo-backups-<account>/dev/` |
 | What is the free-tier runway? | `aws freetier get-account-plan-state` |
+
+---
+
+## When something is wrong
+
+Nothing below was written down anywhere before. Both were verified against the
+live account on 2026-08-09.
+
+### The site is down
+
+Work outward. Each step rules out a layer.
+
+```bash
+# 1. Is it reachable at all, and from outside AWS?
+curl -s -o /dev/null -w '%{http_code}\n' https://api.yisakmesifin.org/healthz
+aws route53 get-health-check-status --health-check-id <id>   # 16 global probers
+
+# 2. Are the containers running?
+aws ecs describe-services --cluster fanosbingo-dev --region us-east-1 \
+  --services caddy functions ticker postgrest realtime \
+  --query 'services[].[serviceName,runningCount,desiredCount]' --output text
+
+# 3. What did the service say?
+aws logs filter-log-events --log-group-name /ecs/fanosbingo-dev \
+  --start-time $(( ($(date +%s) - 900) * 1000 )) --filter-pattern '"level":"error"'
+
+# 4. Is the database reachable from the service?
+curl -s https://api.yisakmesifin.org/functions/v1/readyz     # 503 = DB unreachable
+```
+
+**A green EC2 status check does not mean players can reach you.** The classic
+failure here is the instance being replaced and `user_data` failing to
+re-associate the Elastic IP: the instance is healthy, the ticker keeps calling
+numbers, every internal alarm reads OK, and Cloudflare resolves to an address
+attached to nothing. That is what `api-unreachable` exists to catch — it is the
+only alarm that looks from outside AWS.
+
+### Rolling back a bad deploy
+
+The circuit breaker only covers a deploy that never becomes healthy. A deploy
+that succeeds and is *wrong* needs this:
+
+```bash
+# What is running, and what can you go back to?
+aws ecs describe-services --cluster fanosbingo-dev --region us-east-1 \
+  --services functions --query 'services[0].taskDefinition' --output text
+aws ecs list-task-definitions --region us-east-1 \
+  --family-prefix fanosbingo-dev-functions --status ACTIVE --sort DESC --max-items 5
+
+# Roll back to the previous revision
+aws ecs update-service --cluster fanosbingo-dev --region us-east-1 \
+  --service functions --task-definition fanosbingo-dev-functions:<previous>
+```
+
+Images are tagged by commit SHA and ECR keeps the last 5, so what is running is
+always traceable to a commit.
+
+> **THE TRAP: Terraform will silently undo this.**
+>
+> `modules/ecs_service` sets the service's task definition to
+> `max(terraform's revision, the newest ACTIVE revision)`. A manual rollback to
+> an *older* revision is therefore reverted by the next `terraform apply` — and
+> an apply happens for unrelated reasons.
+>
+> To make a rollback stick, **deregister the bad revision** so the one you rolled
+> back to becomes the newest:
+>
+> ```bash
+> aws ecs deregister-task-definition --region us-east-1 \
+>   --task-definition fanosbingo-dev-functions:<bad>
+> ```
+>
+> Otherwise treat the rollback as buying time, and fix forward.
+
+### Getting a shell, and reaching the database
+
+There is no SSH and no bastion, by design. Both go through SSM.
+
+```bash
+aws ecs execute-command --cluster fanosbingo-dev --region us-east-1 \
+  --task <task-arn> --container functions --interactive --command /bin/sh
+
+source scripts/db-tunnel.sh dev     # exports DATABASE_URL, forwards to :15432
+psql "$DATABASE_URL" -c 'SELECT 1'
+stop_db_tunnel
+```
+
+Every SSM session is a CloudTrail event attributable to an IAM principal, which
+is the reason it is the only path in.
 
 ---
 
