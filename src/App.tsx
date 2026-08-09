@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { Lobby } from './components/Lobby';
 import { GameRoom } from './components/GameRoom';
 import { BankDepositModal } from './components/BankDepositModal';
@@ -32,6 +32,15 @@ interface AppContentProps {
 function AppContent({ walletUser }: AppContentProps) {
   const [view, setView] = useState<View>('lobby');
   const [appUser, setAppUser] = useState<TelegramUser | null>(null);
+  // The game the user deliberately walked away from, if any.
+  //
+  // A REF, not state, on purpose: the auto-enter effect below depends on
+  // [appUser, gameId, gameStarted], and adding another state value to that list
+  // would tear down and rebuild its realtime subscription and its 10s interval
+  // every time somebody left a game. A ref is read by the existing closure
+  // without changing when it re-subscribes.
+  const dismissedGameIdRef = useRef<string | null>(null);
+
   const [gameId, setGameId] = useState<string | null>(() => localStorage.getItem('gameId'));
   const [playerId, setPlayerId] = useState<string | null>(() => localStorage.getItem('playerId'));
   const [gameStarted, setGameStarted] = useState(false);
@@ -143,6 +152,13 @@ function AppContent({ walletUser }: AppContentProps) {
       if (playingGames && playingGames.length > 0) {
         const activeGameId = playingGames[0].id;
 
+        // Hoisted out of the `if` so the spectator check below can read it.
+        // Declaring it inside was a ReferenceError at runtime, caught by
+        // `npm run typecheck` and NOT by the build -- vite does not typecheck,
+        // so this would have shipped as a white screen the moment a round
+        // started. The advisory typecheck job earned its place here.
+        let isPlayerInThisGame = false;
+
         if (appUser) {
           const { data: playerRecord } = await supabase
             .from('players')
@@ -151,9 +167,29 @@ function AppContent({ walletUser }: AppContentProps) {
             .eq('telegram_user_id', appUser.id)
             .maybeSingle();
 
+          isPlayerInThisGame = Boolean(playerRecord?.id);
           setPlayerId(playerRecord?.id || null);
         } else {
           setPlayerId(null);
+        }
+
+        // DO NOT DRAG A SPECTATOR BACK IN.
+        //
+        // This effect force-enters the running game on every poll, which is
+        // right for a PLAYER -- they have paid for a card and should be in the
+        // round they bought, whatever else they tap.
+        //
+        // It is wrong for a spectator, and it is what made "Back to lobby" look
+        // broken: the handler cleared gameId and gameStarted, and within ten
+        // seconds this put them straight back. From the outside the button did
+        // nothing.
+        //
+        // So a deliberate exit is honoured only for somebody with NO player row
+        // in that game. The dismissal is scoped to that game id, so the next
+        // round enters normally rather than leaving them stranded in the lobby.
+        if (!isPlayerInThisGame && dismissedGameIdRef.current === activeGameId) {
+          setGameStarted(false);
+          return;
         }
 
         setGameId(activeGameId);
@@ -299,11 +335,16 @@ function AppContent({ walletUser }: AppContentProps) {
       throw new Error(result.error || 'Failed to join game');
     }
 
+    // Joining clears any prior "I left this round": they are a player now, and
+    // the effect should keep them in the game they have paid for.
+    dismissedGameIdRef.current = null;
     setPlayerId(result.playerId);
     setGameId(gameId);
   };
 
   const handleSpectateGame = (gameId: string) => {
+    // Asking to watch it again undoes a previous "leave".
+    dismissedGameIdRef.current = null;
     setGameId(gameId);
     setGameStarted(true);
     setView('game');
@@ -340,9 +381,16 @@ function AppContent({ walletUser }: AppContentProps) {
   }, []);
 
   const handleReturnToLobby = useCallback(() => {
+    // Remember WHICH game was left, so the auto-enter effect can tell "the user
+    // chose to leave this round" from "the user has not seen this round yet".
+    // Without it, clearing the state below is undone by the next poll.
+    setGameId((current) => {
+      dismissedGameIdRef.current = current;
+      return null;
+    });
+
     localStorage.removeItem('gameId');
     localStorage.removeItem('playerId');
-    setGameId(null);
     setPlayerId(null);
     setGameStarted(false);
   }, []);
