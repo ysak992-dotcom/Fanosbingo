@@ -21,10 +21,35 @@ data "aws_caller_identity" "current" {}
 data "aws_partition" "current" {}
 
 locals {
-  account_id     = data.aws_caller_identity.current.account_id
-  partition      = data.aws_partition.current.partition
-  ssm_param_arn  = "arn:${local.partition}:ssm:*:${local.account_id}:parameter/${var.name_prefix}/*"
-  metric_namespc = "FanosBingo/${var.name_prefix}"
+  account_id    = data.aws_caller_identity.current.account_id
+  partition     = data.aws_partition.current.partition
+  ssm_param_arn = "arn:${local.partition}:ssm:*:${local.account_id}:parameter/${var.name_prefix}/*"
+
+  # THE SAME TREE WITHOUT THE TRAILING /*, AND IT IS NOT A DUPLICATE.
+  #
+  # GetParametersByPath authorises against the PATH, not against the parameters
+  # under it. So a policy scoped only to `parameter/<prefix>/*` grants every
+  # per-parameter read and refuses the one call that enumerates them:
+  #
+  #   AccessDeniedException: not authorized to perform: ssm:GetParametersByPath
+  #   on resource: arn:aws:ssm:us-east-1:...:parameter/fanosbingo-prod
+  #
+  # Measured on the prod secret sync of 2026-08-10, and confirmed with the IAM
+  # simulator against BOTH environments: GetParameter on a child is allowed,
+  # GetParametersByPath on the path is implicitDeny. dev has carried the same
+  # gap since the workflow was moved to this role and simply never hit it,
+  # because the executor role -- AdministratorAccess -- is what runs
+  # post-apply.sh, the other caller.
+  #
+  # The failure it produced is the one this repository keeps producing: the sync
+  # WORKED, all eleven secrets landed, and the step that checks for leftover
+  # placeholders is what failed. A red run about a green outcome.
+  #
+  # Granting the bare path adds no read the line above does not already allow:
+  # as a GetParameter resource it names a parameter literally called
+  # "/<prefix>", which does not exist and will not.
+  ssm_param_path_arn = "arn:${local.partition}:ssm:*:${local.account_id}:parameter/${var.name_prefix}"
+  metric_namespc     = "FanosBingo/${var.name_prefix}"
 
   github_owner = split("/", var.github_repository)[0]
   github_name  = split("/", var.github_repository)[1]
@@ -255,7 +280,10 @@ data "aws_iam_policy_document" "github_deploy" {
       "ssm:GetParameters",
       "ssm:GetParametersByPath",
     ]
-    resources = [local.ssm_param_arn]
+    # Both forms. See the comment on ssm_param_path_arn -- GetParametersByPath
+    # is authorised against the path itself, which `.../<prefix>/*` does not
+    # match.
+    resources = [local.ssm_param_arn, local.ssm_param_path_arn]
   }
 
   statement {
