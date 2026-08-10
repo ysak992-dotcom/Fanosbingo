@@ -83,12 +83,14 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       environment: ${{ steps.target.outputs.environment }}
+      plan_environments: ${{ steps.target.outputs.plan_environments }}
       plan_role: ${{ steps.target.outputs.plan_role }}
     steps:
       - id: target
         env:
           EXECUTOR_ROLE: ${{ vars.AWS_ROLE_ARN }}
           PLANNER_ROLE: ${{ vars.AWS_PLANNER_ROLE_ARN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           case "${{ github.event_name }}" in
@@ -96,6 +98,56 @@ jobs:
             push)              target="prod" ;;   # merge to main targets prod
             *)                 target="dev"  ;;   # PRs plan against dev
           esac
+
+          # WHICH ROOTS A PULL REQUEST ACTUALLY PLANS.
+          #
+          # This used to be `dev`, unconditionally, for every pull request. So a
+          # change to environments/prod or environments/account got a green
+          # "Plan (dev)" that had reviewed none of it -- and the two pull
+          # requests that added Object Lock to the account bucket and unblocked
+          # prod's first apply both merged that way.
+          #
+          # That is worse than no plan. A plan named after an environment it did
+          # not read is evidence of the wrong thing, and it is the shape of
+          # evidence a reviewer trusts most.
+          #
+          # It also hid a real defect for as long as it existed: prod carried
+          # backup_retention_period = 7, which the FREE account plan refuses at
+          # APPLY time, not plan time. No amount of planning dev could have found
+          # it -- but planning prod at least puts the root in front of somebody.
+          #
+          # A modules/ change affects EVERY root, so it plans all three. That is
+          # the case this exists for: dev planning clean while prod does not is
+          # precisely the divergence modules/app_stack was created to prevent,
+          # and nothing was checking for it.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            files="$(gh api --paginate \
+              "repos/${GITHUB_REPOSITORY}/pulls/${{ github.event.number }}/files" \
+              --jq '.[].filename')"
+
+            envs=""
+            for e in account dev prod; do
+              if grep -q "^infra/environments/${e}/" <<<"$files"; then
+                envs="${envs}${envs:+ }${e}"
+              fi
+            done
+
+            # A shared module, or this workflow itself, reaches all of them.
+            if grep -qE '^infra/modules/|^\.github/workflows/terraform\.yml$' <<<"$files"; then
+              envs="account dev prod"
+            fi
+
+            # Nothing matched -- keep the old behaviour rather than planning
+            # nothing, so a path filter that lets a run start always plans
+            # something.
+            envs="${envs:-dev}"
+          else
+            envs="$target"
+          fi
+
+          plan_environments="$(printf '%s\n' $envs | jq -R . | jq -sc .)"
+          echo "plan_environments=$plan_environments" >> "$GITHUB_OUTPUT"
+          echo "Planning: $plan_environments"
 
           # Pull requests plan with the read-only role. Anything else is either a
           # merge to main or an explicit dispatch, both of which are trusted
@@ -182,10 +234,20 @@ jobs:
   # Plan
   # ==========================================================================
   plan:
-    name: Plan (${{ needs.resolve.outputs.environment }})
+    name: Plan (${{ matrix.environment }})
     needs: [resolve, validate]
     if: github.event_name != 'workflow_dispatch' || github.event.inputs.action != 'destroy'
     runs-on: ubuntu-latest
+
+    # One job per root the change reaches. See resolve.
+    #
+    # fail-fast off, deliberately: the whole point is to see EVERY environment's
+    # verdict. Cancelling prod's plan because account's failed would reintroduce
+    # the blind spot in a different shape.
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: ${{ fromJSON(needs.resolve.outputs.plan_environments) }}
 
     # NO `environment:` HERE, and it is load-bearing.
     #
@@ -206,7 +268,7 @@ jobs:
     # Consequence, accepted: `plan` dispatched from a branch other than main is
     # refused. Applies already required main or a protected environment.
     env:
-      TF_DIR: infra/environments/${{ needs.resolve.outputs.environment }}
+      TF_DIR: infra/environments/${{ matrix.environment }}
     steps:
       - uses: actions/checkout@v4
 
@@ -305,7 +367,7 @@ jobs:
         working-directory: ${{ env.TF_DIR }}
         run: |
           {
-            echo "### Plan — ${{ needs.resolve.outputs.environment }}"
+            echo "### Plan — ${{ matrix.environment }}"
             echo
             echo '```terraform'
             tail -c 40000 plan.txt
@@ -322,8 +384,21 @@ jobs:
             const fs = require('fs');
             const plan = fs.readFileSync(`${process.env.TF_DIR}/plan-truncated.txt`, 'utf8');
             const changed = '${{ steps.plan.outputs.has_changes }}' === 'true';
+
+            // A MARKER PER ENVIRONMENT, because this job is now a matrix.
+            //
+            // The lookup below used to match on the literal '### Terraform
+            // plan', which was unique while exactly one plan ran. With three
+            // matrix jobs commenting on one pull request, the first comment to
+            // land is found and overwritten by whichever job finishes next --
+            // so the pull request would end up showing one environment's plan
+            // under whatever heading arrived last, and the other two would
+            // vanish. Quietly, and looking entirely normal.
+            const marker = `<!-- tf-plan:${{ matrix.environment }} -->`;
+
             const body = [
-              `### Terraform plan — \`${{ needs.resolve.outputs.environment }}\``,
+              marker,
+              `### Terraform plan — \`${{ matrix.environment }}\``,
               '',
               changed
                 ? 'Changes are pending.'
@@ -343,7 +418,7 @@ jobs:
               issue_number: context.issue.number,
             });
             const mine = comments.find(c =>
-              c.user.type === 'Bot' && c.body.includes('### Terraform plan'));
+              c.user.type === 'Bot' && c.body.includes(marker));
             if (mine) {
               await github.rest.issues.updateComment({
                 owner: context.repo.owner, repo: context.repo.repo,

@@ -280,6 +280,86 @@ disposable again — and that is the change that should revert the RDS block."*
 
 ---
 
+## What `dev` becomes afterwards
+
+The operating model, in the operator's own words: **`dev` is development and
+staging, stood up to test a change, then destroyed — and only what was tested
+there is applied to `prod`.**
+
+That is the right model for this budget, and it is what `dev/main.tf`'s header
+originally described before players arrived. It is also unusually well served by
+this repository: `terraform destroy` and rebuild is the only real proof that the
+code produces the system, most teams never run it, and their IaC quietly rots
+into something that works only where it already exists. This model exercises it
+every cycle.
+
+At roughly $1/day while it is up, testing three days a month costs about $3
+instead of $30.
+
+Three things make it work, and one will take production down if it is missed.
+
+### ⚠️ After cutover, applying `dev` with Cloudflare enabled hijacks production
+
+`modules/cloudflare` writes `api.<domain_name>`, `app.<domain_name>` and
+`rt.<domain_name>` — and `dev` passes the same apex, `yisakmesifin.org`. So a
+freshly stood-up `dev` with `manage_cloudflare = true` **repoints production's
+three hostnames at `dev`'s Elastic IP.** The apply succeeds, reports no errors,
+and the site is down.
+
+**`manage_cloudflare` must be `false` in `dev` from Phase 2 onward, permanently.**
+It is set false as part of releasing the records to `prod`; the point here is
+that it must never be turned back on.
+
+Giving `dev` its own hostnames does not rescue this cheaply. `api.dev.<domain>`
+is a second-level subdomain: Cloudflare's Universal SSL covers `*.<domain>` and
+not `*.dev.<domain>`, so the edge certificate needs Advanced Certificate Manager
+at $10/month — more than the environment it would serve — and the origin
+certificate would need re-issuing to match.
+
+**Consequence, accepted:** the Cloudflare layer is the one part of the stack
+`dev` cannot test. That belongs written down rather than discovered. Verify `dev`
+the same way [Phase 1](#verifying-prod-before-it-owns-the-domain) verifies `prod`
+before cutover — a temporary security-group rule for your own address, removed
+straight afterwards.
+
+### Standing up is not instant, and that matters
+
+RDS creation alone is ~10 minutes; add migrations, then five services each
+needing two workflow runs the first time (deploy writes the SSM pointer,
+Terraform then creates the service). **Budget 45–90 minutes from nothing to
+usable.**
+
+That tax is the real risk to this model. It is exactly high enough to make
+"it is only a one-line change" tempting — and testing in `prod` is the thing the
+model exists to prevent. If the rebuild is being skipped, the honest fix is to
+shorten it, not to skip it.
+
+### A fresh `dev` has an empty database
+
+Nothing to test against, and no bank options to deposit to. Two pieces already
+exist — `db/test/fixture.sql` (a production-shaped schema built for CI) and
+`scripts/seed-bank-options.sh` — but there is no single step that takes a
+just-applied environment to a usable one.
+
+**Write that step.** A `scripts/seed-dev.sh` that runs migrations, loads the
+fixture and seeds bank options is what keeps the rebuild cheap enough to keep
+happening.
+
+### What `dev` can and cannot prove
+
+| Tested in `dev` | Not tested in `dev` |
+|---|---|
+| Migrations, and that they are idempotent | Cloudflare rules, DNS, edge TLS |
+| Service code, IAM, task wiring | The rate-limit rule (which does not enforce anyway) |
+| Terraform itself, from nothing | Anything about scale — same size, no traffic |
+| The stand-up runbook | Certificate renewal |
+
+The right response to the second column is not to widen `dev`. It is to know
+that those things are only ever verified against `prod`, and to verify them
+deliberately there — which is what `verify.yml` is for.
+
+---
+
 ## After the cutover, and before players
 
 The reason to do this now is the window it opens. On `prod`, with no money in it,
