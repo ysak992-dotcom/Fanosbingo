@@ -259,18 +259,69 @@ the time again:
    `isAlreadyInThisGame` in `Lobby.tsx`. Commit `bf4fa1d`. **Did not fix it.**
 
 **What is therefore still unexplained.** With (3) deployed, a player should never
-reach the spectator panel at all — yet the panel is still being seen. That means
-at least one of these is true, and none has been checked:
+reach the spectator panel at all — yet the panel is still being seen.
 
-- `players` in `Lobby.tsx` is empty or stale while a round is `playing`, so
-  `isAlreadyInThisGame` evaluates false for somebody who *is* a player
-- the panel is reached through the **auto-enter effect**, not the Watch button —
-  the effect sets `playerId` to `null` when it finds no player row, and
-  `GameRoom` renders `isSpectator` from `!playerId || !currentPlayer`
-- `dismissedGameIdRef.current` is not equal to `activeGameId` at the moment the
-  guard runs, so the dismissal never applies
-- the deployed bundle was not the one tested (the Mini App caches aggressively —
-  the entry hash changes on each build, so check it)
+### Fourth hypothesis, added 2026-08-10 — and it is structural
+
+Of the four possibilities listed here previously, three can now be ruled out by
+reading, and the one that survives is the one marked unchecked: **the panel is
+reached through the auto-enter effect, not the Watch button.** Not merely
+possible — unavoidable, at every round transition.
+
+`App.tsx:145` picks the game to enter like this:
+
+```js
+.from('games').select('id').eq('status', 'playing')
+.order('created_at', { ascending: false }).limit(1)
+```
+
+**The newest playing game. Never "the game this user is in."** The `players`
+lookup three lines later is then scoped to *that* game. So:
+
+1. A player is in game A. Game B is created and starts.
+2. The poll picks B, finds no `players` row for them in B, and does
+   `setPlayerId(null)` — for somebody who is genuinely playing, in A.
+3. It then does `setGameId(B)`, `setGameStarted(true)`, pulling them out of the
+   round they paid for and into one they are not in.
+4. `GameRoom` renders `isSpectator` from `!playerId || !currentPlayer`, so they
+   get the Spectator Mode panel.
+
+That alone explains the symptom without the dismissal logic being wrong at all.
+It also explains the observation nothing else did — *"flipped to showing the
+player's own card and a BINGO button"* — because when the newest playing game
+happens to be theirs, `playerId` populates and the card renders.
+
+**And it explains why Back appears dead.** The dismissal is scoped to one game
+id, so tapping Back works until the next game starts, at which point
+`dismissedGameIdRef.current` no longer equals `activeGameId` and the effect
+force-enters again. In a lobby that starts rounds continuously, that is
+indistinguishable from the button doing nothing.
+
+Ruled out while establishing this, so nobody re-checks them:
+
+- **`maybeSingle()` returning null on duplicates** — `players` carries
+  `UNIQUE (game_id, telegram_user_id)`, so there cannot be two rows to trip on.
+- **Hypothesis 3 not actually deployed** — `Lobby.tsx:1023` does gate the banner
+  on `!isAlreadyInThisGame`. It works, and it is irrelevant: the panel is not
+  reached through that banner.
+- **Concurrent `playing` games being impossible** — `db/20-post/002` says the
+  opposite in its own comment, having been written to survive "two concurrent
+  games".
+
+Still unchecked, and cheap to eliminate first: **the deployed bundle was not the
+one tested.** The Mini App caches aggressively and the entry hash changes on each
+build.
+
+**The fix is the one the design question below already names**, and it is small:
+prefer the game the user has a `players` row in, and fall back to "newest
+playing" only for somebody with no row anywhere — for whom entry should be
+explicit rather than automatic.
+
+> **Do not ship it blind.** Three fixes have already gone straight to the busiest
+> player path, in the environment players use, because there is nowhere else to
+> put them. **This one waits for the cutover** — `prod` serving the domain and
+> `dev` rebuildable on demand (`CUTOVER.md`, `scripts/seed-dev.sh`) is exactly
+> what makes a fourth attempt testable instead of a fourth guess.
 
 **How I would approach it next, in this order:**
 
