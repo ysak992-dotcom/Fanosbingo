@@ -336,14 +336,27 @@ shorten it, not to skip it.
 
 ### A fresh `dev` has an empty database
 
-Nothing to test against, and no bank options to deposit to. Two pieces already
-exist — `db/test/fixture.sql` (a production-shaped schema built for CI) and
-`scripts/seed-bank-options.sh` — but there is no single step that takes a
-just-applied environment to a usable one.
+Nothing to test against, no bank to deposit to, and no admin to approve
+anything — so every rebuild used to end in the same twenty minutes of `psql` by
+hand, done slightly differently each time.
 
-**Write that step.** A `scripts/seed-dev.sh` that runs migrations, loads the
-fixture and seeds bank options is what keeps the rebuild cheap enough to keep
-happening.
+[`scripts/seed-dev.sh`](scripts/seed-dev.sh) is that step:
+
+```bash
+source scripts/db-tunnel.sh dev
+./scripts/db-migrate.sh
+./scripts/seed-dev.sh                    # add --admin <telegram-id> for a real account
+```
+
+It seeds `game_url` and `telegram_bot_username` correctly for the environment
+(the exact pair found stale on the live database), two obviously-fake deposit
+destinations, three payout banks, and three players covering the states the
+money paths branch on — balance only, `won_balance` (the only state a withdrawal
+is payable from), and admin.
+
+It is idempotent, and it **refuses to run against production** — checked against
+`DB_HOST`, which is where you actually are, rather than against an argument,
+which is what you meant. There is no `--force`.
 
 ### What `dev` can and cannot prove
 
