@@ -91,16 +91,33 @@ create it. No manual step, but expect each first deploy to take two workflow run
 
 Nothing here is visible to a player. `dev` keeps serving throughout.
 
-```bash
-# 1. Populate prod's parameter tree from the repository secrets.
-gh workflow run sync-secrets.yml -f environment=prod
+> **TERRAFORM FIRST, SECRETS SECOND.** This list read the other way round until
+> 2026-08-10, and it could not have worked. `sync-secrets.yml:117` writes each
+> SecureString with `--key-id alias/fanosbingo-<env>-main`, and that alias is
+> created by `modules/kms` — during the apply. Asked directly, KMS is
+> unambiguous:
+>
+> ```
+> NotFoundException: Alias .../alias/fanosbingo-prod-main is not found
+> ```
+>
+> Nothing consumes the secrets during the apply — `modules/ssm` writes
+> `PLACEHOLDER_SET_ME_OUT_OF_BAND` with `ignore_changes = [value]`, and the ECS
+> services do not exist yet — so the apply is safe with placeholders in place.
+> Migrations, which create the database roles from `db/app_password`, are what
+> must come after the real values land.
 
-# 2. Read the plan. Expect: VPC, RDS, EC2, KMS, ECR, IAM, SSM, monitoring.
+```bash
+# 1. Read the plan. Expect: VPC, RDS, EC2, KMS, ECR, IAM, SSM, monitoring.
 #    Expect NO cloudflare resources and NO ECS services.
 gh workflow run terraform.yml -f environment=prod -f action=plan
 
-# 3. Apply. The `prod` GitHub Environment requires a reviewer.
+# 2. Apply. The `prod` GitHub Environment requires a reviewer.
+#    This creates the KMS key the next step writes through.
 gh workflow run terraform.yml -f environment=prod -f action=apply
+
+# 3. Replace the placeholders with the real values.
+gh workflow run sync-secrets.yml -f environment=prod
 
 # 4. Schema. Dry run first — it prints filenames and executes nothing.
 gh workflow run db-migrate.yml -f environment=prod -f dry_run=true
