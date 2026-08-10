@@ -135,6 +135,35 @@ jobs:
         run: |
           set -euo pipefail
 
+          # Runs an AWS command and, on failure, PRINTS WHY.
+          #
+          # THIS EXISTS BECAUSE OF THE RUN OF 2026-08-09 04:55 UTC, which failed
+          # with `Process completed with exit code 254` and NO MESSAGE ANYWHERE
+          # -- for a dump that had already uploaded correctly and is still in the
+          # bucket at the right size. The operator was paged about a backup that
+          # exists, with nothing to act on and nothing to diagnose from.
+          #
+          # 254 is the AWS CLI's own exit code, so an aws call did fail. Which
+          # one, and why, is unanswerable after the fact: `set -e` aborts on the
+          # assignment before any handling runs, and the CLI's explanation goes
+          # to a stderr nobody captured. scripts/db-tunnel.sh:67 records exactly
+          # this lesson and wraps against it; this workflow did not.
+          #
+          # `if ! out=...` rather than a bare assignment, deliberately: under
+          # `set -e` a plain assignment whose command substitution fails exits
+          # the shell immediately, so the error handling below would never run.
+          # Putting it in a tested context is what suppresses that.
+          _aws() {
+            local out status
+            if ! out="$("$@" 2>&1)"; then
+              status=$?
+              echo "::error::AWS call failed (exit ${status}): $*"
+              printf '%s\n' "$out" | sed 's/^/  /'
+              return "$status"
+            fi
+            printf '%s' "$out"
+          }
+
           ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
           BUCKET="fanosbingo-backups-${ACCOUNT}"
           STAMP="$(date -u +%Y-%m-%dT%H-%M-%SZ)"
@@ -185,21 +214,7 @@ jobs:
           fi
           echo "archive contains $(wc -l < /tmp/toc.txt) entries"
 
-          # ---------------------------------------------------------------
-          # ACTUALLY RESTORE IT.
-          #
-          # Everything above proves the file is well formed. This proves it
-          # works, which is a different claim and the only one that matters at
-          # 3am. It runs BEFORE the upload on purpose: a dump that cannot be
-          # restored must not be stored as though it were good, because a bad
-          # backup that looks fine is worse than no backup at all -- it converts
-          # "we know we are exposed" into "we think we are covered".
-          #
-          # The tunnel is closed first. Restoring while a forwarder to the LIVE
-          # database is open on this runner is a hazard worth removing rather
-          # than relying on port numbers to avoid.
-          # ---------------------------------------------------------------
-          aws s3 cp "$LOCAL" "s3://${BUCKET}/${KEY}" --only-show-errors
+          _aws aws s3 cp "$LOCAL" "s3://${BUCKET}/${KEY}" --only-show-errors
 
           # Confirm from the SERVICE, not from the exit code of the upload --
           # but with LIST, not HEAD.
@@ -208,20 +223,40 @@ jobs:
           # NOT have: a nightly job has no reason to be able to read the ledger
           # back out of S3, and that restriction is the point of the scoping.
           #
-          # So the confirmation needed the one permission the design refuses to
-          # grant, and the result was a job that uploaded the dump successfully
-          # and then reported "Database backup FAILED" -- including for the
-          # 04:00 scheduled run, whose dump is sitting in the bucket. A false
-          # page about a real backup is the fastest way to teach somebody to
-          # ignore the alarm.
-          #
           # list-objects-v2 filtered to the exact key answers the same question
           # -- did an object of the right size arrive -- using s3:ListBucket,
           # which IS granted, under a prefix condition scoped to this
-          # environment. Verified with the IAM simulator: GetObject
-          # implicitDeny, ListBucket with the prefix context allowed.
-          REMOTE="$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$KEY" \
-            --query 'Contents[0].Size' --output text)"
+          # environment. Re-verified with the IAM simulator on 2026-08-09, with
+          # the s3:prefix context set to the exact key: ListBucket allowed,
+          # GetObject implicitDeny. So permissions are NOT what fails here.
+          #
+          # RETRIED, BECAUSE THE ANSWER AND THE ABILITY TO ASK ARE DIFFERENT
+          # THINGS. "The object is the wrong size" is a real failure and must
+          # page. "The call to find out did not complete" is not -- it says
+          # nothing about the backup, and treating the two alike is what turned a
+          # successful 04:55 dump into a page. Transient endpoint failures
+          # against this account are not hypothetical: two occurred while
+          # auditing it by hand on 2026-08-09.
+          #
+          # ListObjectsV2 is strongly consistent after a PUT, so a retry cannot
+          # paper over a missing object -- only over a failed conversation.
+          REMOTE=""
+          for attempt in 1 2 3 4 5; do
+            if REMOTE="$(_aws aws s3api list-objects-v2 \
+              --bucket "$BUCKET" --prefix "$KEY" \
+              --query 'Contents[0].Size' --output text)"; then
+              break
+            fi
+            REMOTE=""
+            echo "verification attempt ${attempt} could not complete; retrying"
+            sleep $(( attempt * 3 ))
+          done
+
+          if [ -z "$REMOTE" ]; then
+            echo "::error::Could not confirm the upload after 5 attempts. The dump may well be in s3://${BUCKET}/${KEY} -- check before assuming there is no backup. The AWS error is above."
+            exit 1
+          fi
+
           if [ "$REMOTE" != "$SIZE" ]; then
             echo "::error::Uploaded ${REMOTE} bytes but the dump is ${SIZE}."
             exit 1
@@ -233,12 +268,18 @@ jobs:
           # HEARTBEAT HERE, not in a later step.
           #
           # The backup exists and is confirmed the moment the line above runs.
-          # The verification below is a check ON that backup, not a precondition
-          # OF it, so the alarm that watches for a missing backup must be
-          # satisfied before verification is attempted -- otherwise a problem in
-          # the verifier reads as "no backup was taken", which is a different and
-          # more alarming thing than what actually happened.
-          aws cloudwatch put-metric-data \
+          # Anything after this is a check ON that backup, not a precondition OF
+          # it, so the alarm that watches for a missing backup must be satisfied
+          # first -- otherwise a problem in a checker reads as "no backup was
+          # taken", which is a different and more alarming thing than what
+          # actually happened.
+          #
+          # That is not theoretical either. On 2026-08-09 the verification above
+          # failed opaquely, this line never ran, and HoursSinceLastBackup went
+          # unpublished for a dump sitting in the bucket -- so the failure
+          # notification AND the missing-backup alarm both described a backup
+          # that had succeeded.
+          _aws aws cloudwatch put-metric-data \
             --namespace "FanosBingo/fanosbingo-${ENVIRONMENT}" \
             --metric-name HoursSinceLastBackup \
             --dimensions "Environment=${ENVIRONMENT}" \
@@ -291,7 +332,16 @@ jobs:
             if [ "${{ steps.dump.outcome }}" = "success" ]; then
               echo "- \`s3://${{ steps.dump.outputs.bucket }}/${{ steps.dump.outputs.key }}\`"
               echo "- ${{ steps.dump.outputs.size }} bytes"
-              echo "- **restored into a throwaway PostgreSQL 16 and checked**: ${{ steps.dump.outputs.restored_users }} players present"
+              # SAY ONLY WHAT THIS RUN DID. This line used to read "restored
+              # into a throwaway PostgreSQL 16 and checked: N players present",
+              # interpolating steps.dump.outputs.restored_users -- an output no
+              # step has set since the restore check was removed above. So every
+              # green run advertised a verification that does not happen, with a
+              # blank where the number should be. A summary that overstates the
+              # backup is the same failure as a backup that is not there, one
+              # step removed.
+              echo "- archive parsed with \`pg_restore --list\` before upload"
+              echo "- **not** restored end to end — see RESTORE.md, and repeat it by hand after any schema change"
               echo "- kept 30 days by the bucket lifecycle rule"
             else
               echo "- **FAILED.** No recovery point older than 24 hours exists until this succeeds."

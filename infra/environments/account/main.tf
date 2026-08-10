@@ -438,8 +438,14 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     # a quiet failure takes to surface rather than against storage cost. A
     # disputed balance or a bad migration is typically noticed within days, not
     # hours -- which is precisely the range RDS's 1-day cap cannot reach.
+    #
+    # PLUS ONE, so this never races the Object Lock retention below. The lock
+    # guarantees thirty days of immutability; a lifecycle expiration on day
+    # thirty would be refused by S3 for as long as the lock holds and then
+    # silently retried, which works but leaves the rule quietly not doing what
+    # it says. Deleting on day thirty-one means the two agree.
     expiration {
-      days = var.backup_retention_days
+      days = var.backup_retention_days + 1
     }
 
     noncurrent_version_expiration {
@@ -450,6 +456,63 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     # being invisible in the object listing.
     abort_incomplete_multipart_upload {
       days_after_initiation = 3
+    }
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Object Lock -- the control that makes these backups survive the account
+#
+# WHAT VERSIONING ABOVE DOES NOT DO. It stops a dump being silently REPLACED.
+# It does not stop it being DELETED: a principal holding s3:DeleteObjectVersion
+# can remove every version, and this account has such a principal -- an IAM user
+# with AdministratorAccess and a console password. The same credential can clear
+# `deletion_protection` on the RDS instance and drop it.
+#
+# So today the database and the only copy of the database that outlives it share
+# one blast radius, and CloudTrail records management events only -- the object
+# deletions would not even appear. That is the gap this closes: the backups stop
+# being reachable by the credential whose misuse they exist to survive.
+#
+# COMPLIANCE, NOT GOVERNANCE, AND THIS IS THE WHOLE DECISION.
+#
+#   GOVERNANCE  a principal with s3:BypassGovernanceRetention can override it.
+#               Administrator has that permission. It defends against a mistake
+#               and against nobody else, which is not the threat above.
+#   COMPLIANCE  nothing overrides it. Not this account's administrator, not the
+#               root user, not AWS Support.
+#
+# GOVERNANCE would let this file claim a protection it does not provide, which
+# is the failure mode this repository keeps finding in itself. So: COMPLIANCE.
+#
+# WHICH MEANS THIS CANNOT BE UNDONE. For thirty days after it is written, every
+# dump is undeletable by anyone, and the retention cannot be shortened. Read the
+# blast radius of being wrong before applying: ~470 KB a night, so a mistake
+# costs roughly 14 MB of storage held for thirty days, inside the 5 GB S3 free
+# tier. That is the correct direction to be wrong in for the only recovery point
+# older than 24 hours that this system has.
+#
+# APPLIES TO NEW OBJECTS ONLY. The dumps already in the bucket stay deletable
+# and simply age out. Full coverage exists thirty days after the first apply.
+#
+# NO REPLACEMENT RISK, and this is worth stating because getting it wrong would
+# destroy the bucket. `object_lock_enabled` on aws_s3_bucket is ForceNew -- but
+# it is also Computed, so leaving it unset there (as it is above) means
+# Terraform reads the live value and plans no change. Enabling the lock through
+# this separate resource is supported on an existing bucket precisely because
+# versioning is already on. CONFIRM THAT IN THE PLAN BEFORE APPLYING: if the
+# plan proposes replacing aws_s3_bucket.backups, stop.
+resource "aws_s3_bucket_object_lock_configuration" "backups" {
+  bucket = aws_s3_bucket.backups.id
+
+  # S3 refuses a lock configuration on a bucket whose versioning is not yet
+  # settled, the same ordering the lifecycle rule needs.
+  depends_on = [aws_s3_bucket_versioning.backups]
+
+  rule {
+    default_retention {
+      mode = "COMPLIANCE"
+      days = var.backup_retention_days
     }
   }
 }
