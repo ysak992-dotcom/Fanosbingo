@@ -97,18 +97,40 @@ module "rds" {
   # Modifications wait for the maintenance window rather than interrupting play.
   apply_immediately = false
 
-  # REQUIRES A PAID ACCOUNT PLAN. On the FREE plan this account is currently on,
-  # any value above 1 is refused outright:
+  # ONE, AND IT MUST BECOME 7 BEFORE THE FIRST REAL DEPOSIT.
+  #
+  # On the FREE plan this account is on, any value above 1 is refused outright:
   #
   #   FreeTierRestrictionError: The specified backup retention period exceeds
   #   the maximum available to free tier customers.
   #
-  # Measured against the live dev instance, which is on the same account, so it
-  # will fail here too. Left at 7 deliberately rather than lowered to match dev:
-  # prod is not applyable today for other reasons, and quietly weakening the
-  # ledger's recovery window to make a plan succeed would be the wrong direction
-  # to resolve the conflict. Upgrade the plan before the first prod apply.
-  backup_retention_period = 7
+  # Measured against the live dev instance, which is on the same account, and
+  # retried with 2 and refused identically -- the ceiling is exactly 1. It does
+  # not fail quietly; it fails the whole apply.
+  #
+  # THIS READ 7 UNTIL 2026-08-10, under a comment arguing that lowering it to
+  # make a plan succeed would be "quietly weakening the ledger's recovery
+  # window". That argument was right, and it rested on a premise that is not
+  # true: there is no real money in any environment, and the wallet holds zero
+  # BNB on both networks. There is no ledger to weaken yet.
+  #
+  # So the value is 1 because a 24-hour recovery window on test data costs
+  # nothing, and because leaving it at 7 blocks the cutover that makes prod the
+  # environment serving players at all -- which is worth more than a recovery
+  # window on rows nobody would miss.
+  #
+  # THE TRIGGER IS THE FIRST REAL DEPOSIT, not a date and not a release. On that
+  # day this must be 7, which needs the paid account plan, and the same upgrade
+  # lifts Multi-AZ, enables GuardDuty and removes the credit-exhaustion deadline
+  # that currently lands in early December 2026. One billing decision closes all
+  # four. See CUTOVER.md.
+  #
+  # The mitigation until then is unchanged and is the stronger control anyway:
+  # nightly pg_dump to S3, kept 30 days, now under Object Lock in COMPLIANCE
+  # mode so it survives this account's own administrator. RDS retention answers
+  # "undo the last day"; that answers "undo last Monday", which is the failure
+  # that actually costs money.
+  backup_retention_period = 1
 
   # Stage 2 upgrade: multi_az = true (roughly doubles the instance cost).
   multi_az = false
