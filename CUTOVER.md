@@ -197,6 +197,29 @@ them and updates the content in place.
 The second is what you would have to do with players on the system. Running it
 now, while a mistake is free, is the only way to find out whether it works.
 
+### The monitoring that does not come with `prod`
+
+**Established from `prod`'s actual plan on 2026-08-10, not by reading.** The plan
+creates **10** alarms. `dev` currently runs **13**. The difference is four
+toggles, every one of them correct while `prod` serves nothing and wrong the
+moment it serves the domain:
+
+| Toggle | `dev` | `prod` | What is lost |
+|---|---|---|---|
+| `enable_external_health_check` | `true` | **`false`** | `api-unreachable`, and the Route 53 check behind it — **the only signal that looks from outside AWS**, and the one that catches an instance that is healthy on an address Cloudflare no longer reaches |
+| `enable_backup_alarm` | default `true` | **`false`** | `backup-did-not-run` — the alarm covering the nightly dump being disabled or never running |
+| `enable_free_tier_alarm` | `true` | default `false` | `free-tier-credits-low` — **the only alarm no budget can replace**, because spend is zero while credits absorb the bill |
+| `enable_telegram_alerts` | default `true` | **`false`** | Every alarm falls back to email only. SMS does not deliver on this account, so this is not a second channel becoming a third — it is the second channel disappearing |
+
+Three are explicit `false` in `environments/prod/main.tf`; the fourth is an unset
+default. None is an oversight — they were right when `prod` was a plan nobody had
+run. **All four must flip in the same change that gives `prod` the domain**, and
+before `dev` is destroyed, because until then `dev` is what is carrying them.
+
+The free-tier one deserves saying plainly: destroy `dev` without flipping it and
+the account loses its only warning that it is heading for suspension, on a
+schedule that currently lands in early December 2026.
+
 ### Telegram
 
 **Deploy first, register second.** The bot goes silent if this is reversed.
