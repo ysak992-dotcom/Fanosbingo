@@ -336,8 +336,43 @@ jobs:
           TF_VAR_realtime_image: ${{ vars.REALTIME_IMAGE }}
           TF_VAR_caddy_image: ${{ vars.CADDY_IMAGE }}
         run: |
+          # PROD PLANS ON A PULL REQUEST DO NOT REFRESH, AND THAT IS A CHOICE.
+          #
+          # Refreshing reads every managed resource back, which for
+          # modules/ssm means GetParameter WITH DECRYPTION on eleven
+          # SecureStrings. The read-only planner cannot do that against prod:
+          #
+          #   AccessDeniedException: not authorized to perform: kms:Decrypt
+          #   on resource: .../key/816f1b74-...
+          #
+          # It is not a missing grant. scripts/bootstrap-aws.sh gives the
+          # planner a statement named DecryptDevParametersOnly, conditioned on
+          # aws:ResourceTag/Environment = dev. That was exactly right while dev
+          # was the only environment, and it stayed right when prod appeared --
+          # this role is assumed on `pull_request`, so widening it would let
+          # anyone able to push a branch read prod's JWT secret, bot token,
+          # database passwords and TLS origin key out of a modified workflow.
+          #
+          # So the plan gives up the thing it cannot have. -refresh=false plans
+          # against stored state and never reads a parameter, which answers the
+          # question a REVIEW plan is actually asking -- what does this change
+          # do -- while giving up the one it is not -- what has drifted since
+          # the last apply. Drift on prod is caught by the dispatched plan,
+          # which runs as the executor.
+          #
+          # dev still refreshes: the planner can decrypt it, and drift there is
+          # worth seeing. account still refreshes: it holds no SecureString, so
+          # nothing fails. If account ever gains one, this condition is where
+          # that surfaces, loudly, as a red plan rather than a quiet stale one.
+          REFRESH=""
+          if [ "${{ github.event_name }}" = "pull_request" ] && [ "${{ matrix.environment }}" = "prod" ]; then
+            REFRESH="-refresh=false"
+            echo "::notice::Planning prod without a state refresh -- see the comment in terraform.yml. Drift is not covered by this plan."
+          fi
+          echo "refreshed=$([ -n "$REFRESH" ] && echo false || echo true)" >> "$GITHUB_OUTPUT"
+
           set +e
-          terraform plan -detailed-exitcode -no-color -out=tfplan > plan.txt 2>&1
+          terraform plan $REFRESH -detailed-exitcode -no-color -out=tfplan > plan.txt 2>&1
           code=$?
           set -e
           # -detailed-exitcode: 0 = no changes, 1 = error, 2 = changes present.
@@ -403,6 +438,12 @@ jobs:
               changed
                 ? 'Changes are pending.'
                 : 'No changes. Infrastructure matches the configuration.',
+              // SAY WHEN THE PLAN DID NOT LOOK. An unlabelled "No changes" from
+              // a plan that never refreshed reads as "nothing has drifted",
+              // which is precisely what it cannot know.
+              '${{ steps.plan.outputs.refreshed }}' === 'false'
+                ? '\n> Planned **without a state refresh**, so this shows what the change does and *not* whether anything has drifted. See the comment in `terraform.yml`.'
+                : '',
               '',
               '<details><summary>Show plan</summary>',
               '',
