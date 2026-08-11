@@ -1,6 +1,21 @@
 # Cutover — standing up `prod` and retiring `dev`
 
-**Written 2026-08-10.** Read the whole thing before running any of it.
+**Written 2026-08-10. Phases 0-2 executed 2026-08-10/11 — see Status below.**
+Read the whole thing before running any of it.
+
+## Status
+
+| Phase | | |
+|---|---|---|
+| 0 | Blockers cleared | `backup_retention_period` lowered to 1; prod applyable for the first time |
+| 1 | prod stood up beside dev | 104 resources, schema (122 migrations), secrets, five services — no player-visible change |
+| 2 | prod took the domain | DNS, zone settings, ruleset, health check and all four monitoring toggles moved |
+| 3 | **dev retired** | **NOT DONE.** dev is retained deliberately as the rollback until prod is fully exercised |
+
+What remains before Phase 3: play a round end to end through the Mini App, apply
+dev once to pick up the changes merged since its last apply, and confirm the SNS
+email subscription — it is still `PendingConfirmation`, so prod's email channel
+delivers nothing.
 
 This runbook exists because the environment serving `api.yisakmesifin.org` is
 called `dev`, and every document in this repository has had to work around that.
@@ -255,13 +270,50 @@ short gap rather than being seamless. Applying prod first would have it creating
 a ruleset that still exists, and duplicate A records would split traffic across
 two databases, which is worse than a clean few minutes of nothing.
 
-### Telegram
+### Telegram — probably nothing to do, and check before you act
 
-**Deploy first, register second.** The bot goes silent if this is reversed.
+**Do not re-register reflexively.** Whether anything is needed depends on two
+things, and on 2026-08-11 the answer to both made it a no-op:
+
+- **The webhook URL is a hostname, not an origin.** It is registered as
+  `https://api.<domain>/functions/v1/telegram/webhook`, and the cutover changes
+  what that hostname resolves to, not the hostname. Telegram followed DNS on its
+  own.
+- **Both environments share the secret**, because `sync-secrets.yml` writes each
+  from the same `TELEGRAM_WEBHOOK_SECRET` repository secret. So the header
+  Telegram was already sending still validated against prod.
+
+Verified rather than assumed:
+
+```bash
+curl -s https://api.telegram.org/bot$TOKEN/getWebhookInfo   # url, pending, last_error
+```
+
+```
+url                    https://api.<domain>/functions/v1/telegram/webhook
+pending_update_count   0
+last_error_message     (absent)
+```
+
+and against the route itself — no header 401, wrong secret 401, correct secret
+200, handled by `"env":"prod"`.
+
+**Re-registering would have been the riskier move.** `register-telegram-webhook.sh`
+says so in its own header: if a webhook already exists and you are rotating the
+secret, register FIRST and deploy second, or there is a window where the
+deployed check rejects the header Telegram is still sending.
+
+Run it only if `getWebhookInfo` shows the wrong URL, a `last_error_message`, or
+you are deliberately rotating the secret:
 
 ```bash
 ./scripts/register-telegram-webhook.sh prod
 ```
+
+> The check that proved this also found a defect: the access-log line recording
+> the successful request **contained the secret in plaintext**. Caddy logs every
+> header and redacts only `Authorization` and `Cookie`. Fixed in the `api` site's
+> log block — see the comment there.
 
 ### Verify from outside
 
