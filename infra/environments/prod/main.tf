@@ -285,33 +285,37 @@ module "monitoring" {
   # serving, and on an address Cloudflare no longer reaches.
   enable_external_health_check = true
 
-  # STILL OFF, AND THE REASON HAS CHANGED. The functions service now exists, so
-  # the original blocker is gone. What replaces it is a race this repository has
-  # already lost once.
+  # ON. The race this waited for is over.
   #
-  # SNS confirms an HTTPS subscription by CALLING the endpoint, immediately,
-  # during the apply. The endpoint is api.<domain>/functions/v1/alerts/sns --
-  # the hostname this very apply is in the middle of repointing. Enabling it in
-  # the same change bets that Cloudflare has converged before SNS dials, and
-  # losing that bet fails the whole apply after a five-minute wait:
+  # SNS confirms an HTTPS subscription by CALLING the endpoint during the apply,
+  # and the endpoint is api.<domain>/functions/v1/alerts/sns. Enabling it in the
+  # DNS change itself would have bet that Cloudflare had converged before SNS
+  # dialled; losing that bet fails the whole apply after a five-minute wait, as
+  # it did on dev on 2026-08-05.
   #
-  #   Error: waiting for SNS Topic Subscription (...) confirmation:
-  #          timeout while waiting for state to become 'false'
+  # api.<domain> is now confirmed answering from prod -- 200 on /healthz and
+  # /functions/v1/readyz, and prod's Caddy logged 180 requests over three
+  # minutes while dev's logged none -- so the callback has somewhere to land.
   #
-  # Observed on dev on 2026-08-05, and it passed on the retry -- the worst kind
-  # of bug, self-healing so it reads as a flake. Turn this on in the FOLLOWING
-  # apply, once api.<domain> is confirmed answering from prod.
-  enable_telegram_alerts = false
+  # This is the SECOND channel, not a nicety. SMS does not deliver on this
+  # account: AWS End User Messaging is not enrolled, so SNS accepts the
+  # subscription and drops every message. Without this, every alarm is an email
+  # and nothing else.
+  enable_telegram_alerts = true
 
-  # STILL OFF, and this one is a hard precondition rather than a race. The alarm
-  # treats absent data as breaching, deliberately, so it goes to ALARM the
-  # moment it is created and stays there until a backup publishes
-  # HoursSinceLastBackup for THIS environment. Nothing has ever backed prod up.
+  # ON, and the precondition is now satisfied rather than assumed.
   #
-  # Order: run db-backup.yml -f environment=prod, confirm the metric, then
-  # enable this. Turning it on first produces a page about a backup nobody has
-  # asked for yet, which is how an alarm gets muted.
-  enable_backup_alarm = false
+  # The alarm treats absent data as breaching, deliberately, so it goes to ALARM
+  # the moment it is created and stays there until a backup publishes
+  # HoursSinceLastBackup for THIS environment. Turning it on before that
+  # produces a page about a backup nobody has asked for yet, which is how an
+  # alarm gets muted.
+  #
+  # prod's first backup ran on 2026-08-11: prod/2026-08-11T11-34-22Z.dump,
+  # 274219 bytes, under a COMPLIANCE lock until 2026-09-10, and the metric reads
+  # 0. The nightly cron now targets prod as well, so the next datapoint arrives
+  # at 04:00 UTC without anyone dispatching it.
+  enable_backup_alarm = true
 
   # ON, and it is the one alarm no budget can replace.
   #
