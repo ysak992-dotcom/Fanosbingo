@@ -142,7 +142,7 @@ echo "${BOLD}Alarm delivery — ${PREFIX}${NC}"
 echo
 
 alarms_json="$(aws cloudwatch describe-alarms --alarm-name-prefix "$PREFIX" \
-  --query 'MetricAlarms[].{name:AlarmName,state:StateValue,actions:AlarmActions,ns:Namespace,metric:MetricName,missing:TreatMissingData}' \
+  --query 'MetricAlarms[].{name:AlarmName,state:StateValue,actions:AlarmActions,ns:Namespace,metric:MetricName,missing:TreatMissingData,period:Period,evals:EvaluationPeriods}' \
   --output json)"
 
 # `fanosbingo-` matches the environment alarms too. Drop them, so `account`
@@ -216,8 +216,9 @@ echo "$alarms_json" | python3 -c '
 import json,sys
 for a in json.load(sys.stdin):
     print("\t".join([a["name"], a["state"], str(len(a["actions"] or [])),
-                     a["ns"] or "", a["metric"] or "", a["missing"] or ""]))' |
-while IFS=$'\t' read -r name state nactions ns metric missing; do
+                     a["ns"] or "", a["metric"] or "", a["missing"] or "",
+                     str(a.get("period") or 300), str(a.get("evals") or 1)]))' |
+while IFS=$'\t' read -r name state nactions ns metric missing period evals; do
   echo "${BOLD}${name}${NC}  [${state}]"
 
   if [ "$nactions" -eq 0 ]; then
@@ -236,11 +237,36 @@ while IFS=$'\t' read -r name state nactions ns metric missing; do
     pass "  ${metric}: event-driven, so no datapoints is correct. Pattern coverage is verify-detections.sh"
 
   elif [ "$ns" = "$NAMESPACE" ]; then
-    # Only our own metrics; AWS/RDS and AWS/EC2 always have data.
+    # THE WINDOW IS THE ALARM'S OWN, NOT A FIXED TWO HOURS.
+    #
+    # This asked "any datapoints in the last 2h?" for every metric, which is
+    # right only for one published more often than that. HoursSinceLastBackup
+    # arrives once a night and FreeTierCreditsRemaining once a day, so both
+    # reported "NO datapoints ... it is unarmed" about alarms that were armed
+    # and correct -- their own evaluation windows are 30h and 24h.
+    #
+    # Measured on prod on 2026-08-11: both metrics had published three hours
+    # earlier, and both were called unarmed.
+    #
+    # That is this script's own stated failure mode turned on itself. Its header
+    # says a check that fails permanently teaches everyone to ignore it, and
+    # verify.yml now runs weekly against prod -- so this would have produced two
+    # standing FAILs forever, on the backup alarm and on the one alarm no budget
+    # can replace.
+    #
+    # Period x EvaluationPeriods is exactly the span CloudWatch itself considers
+    # before deciding a datapoint is missing, so asking over that span asks the
+    # same question the alarm does. Floored at 2h so a fast metric still gets a
+    # meaningful sample rather than a single period.
+    span=$(( period * evals ))
+    [ "$span" -lt 7200 ] && span=7200
+    window_h=$(( (span + 3599) / 3600 ))
+    since="$(date -u -d "@$(( $(date -u +%s) - span ))" +%FT%TZ)"
+
     points="$(aws cloudwatch get-metric-statistics \
       --namespace "$ns" --metric-name "$metric" \
       --dimensions Name=Environment,Value="$ENVIRONMENT" \
-      --start-time "$(date -u -d '2 hours ago' +%FT%TZ)" \
+      --start-time "$since" \
       --end-time "$(date -u +%FT%TZ)" \
       --period 300 --statistics Maximum \
       --query 'length(Datapoints)' --output text 2>/dev/null || echo 0)"
@@ -249,14 +275,14 @@ while IFS=$'\t' read -r name state nactions ns metric missing; do
       latest="$(aws cloudwatch get-metric-statistics \
         --namespace "$ns" --metric-name "$metric" \
         --dimensions Name=Environment,Value="$ENVIRONMENT" \
-        --start-time "$(date -u -d '2 hours ago' +%FT%TZ)" \
+        --start-time "$since" \
         --end-time "$(date -u +%FT%TZ)" \
         --period 300 --statistics Maximum \
         --query 'sort_by(Datapoints,&Timestamp)[-1].Maximum' --output text)"
-      pass "  ${metric}: ${points} datapoint(s) in 2h, latest ${latest}"
+      pass "  ${metric}: ${points} datapoint(s) in ${window_h}h, latest ${latest}"
     else
       # This is the silent one. Say exactly what it means.
-      fail "  ${metric}: NO datapoints in 2h. treat_missing_data=${missing}, so this alarm cannot fire. It is not healthy, it is unarmed."
+      fail "  ${metric}: NO datapoints in ${window_h}h (the alarm's own evaluation span). treat_missing_data=${missing}, so this alarm cannot fire. It is not healthy, it is unarmed."
     fi
   fi
   echo
