@@ -228,14 +228,32 @@ moment it serves the domain:
 | `enable_free_tier_alarm` | `true` | default `false` | `free-tier-credits-low` — **the only alarm no budget can replace**, because spend is zero while credits absorb the bill |
 | `enable_telegram_alerts` | default `true` | **`false`** | Every alarm falls back to email only. SMS does not deliver on this account, so this is not a second channel becoming a third — it is the second channel disappearing |
 
-Three are explicit `false` in `environments/prod/main.tf`; the fourth is an unset
-default. None is an oversight — they were right when `prod` was a plan nobody had
-run. **All four must flip in the same change that gives `prod` the domain**, and
-before `dev` is destroyed, because until then `dev` is what is carrying them.
+None is an oversight — they were right when `prod` was a plan nobody had run.
+But **two of the four cannot be flipped in the DNS change itself**, and their own
+comments say why:
 
-The free-tier one deserves saying plainly: destroy `dev` without flipping it and
-the account loses its only warning that it is heading for suspension, on a
-schedule that currently lands in early December 2026.
+| Toggle | When | Why not sooner |
+|---|---|---|
+| `enable_external_health_check` | **with the DNS move** | Its precondition *is* the DNS move |
+| `enable_free_tier_alarm` | **with the DNS move** | No precondition; must exist before `dev` is destroyed |
+| `enable_telegram_alerts` | **the apply after** | SNS confirms a subscription by *calling* `api.<domain>/functions/v1/alerts/sns` — the hostname that apply is mid-way through repointing. Losing that race fails the whole apply after a five-minute wait. It happened on dev on 2026-08-05 and passed on retry, which is what makes it worth pinning down |
+| `enable_backup_alarm` | **after the first prod backup** | The alarm treats absent data as breaching, so it goes to ALARM on creation and stays there until `HoursSinceLastBackup` exists for prod. Run `db-backup.yml -f environment=prod` first |
+
+The free-tier one deserves saying plainly: destroy `dev` without it and the
+account loses its only warning that it is heading for suspension, on a schedule
+that currently lands in early December 2026.
+
+### Zone ownership moves in the same change
+
+`modules/cloudflare` owns more than the three A records — it also owns six zone
+settings and the rate-limit ruleset. **Exactly one root may own them.** Cloudflare
+permits one ruleset per phase, so if both roots have `manage_cloudflare = true`
+the second to apply fails outright.
+
+That is why the order is **dev releases, then prod takes** — and why it costs a
+short gap rather than being seamless. Applying prod first would have it creating
+a ruleset that still exists, and duplicate A records would split traffic across
+two databases, which is worse than a clean few minutes of nothing.
 
 ### Telegram
 

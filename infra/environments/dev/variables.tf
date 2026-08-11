@@ -101,14 +101,28 @@ variable "manage_cloudflare" {
   description = <<-EOT
     Whether THIS root manages the Cloudflare zone.
 
-    Both environments share one domain and therefore one zone, so exactly one of
-    them may own the DNS records and zone settings.
+    FALSE, AND IT MUST STAY FALSE. Not a default to flip back when convenient.
 
-    Dev owns the zone TODAY, because dev is what currently serves
-    api.<domain> and rt.<domain>.
+    modules/cloudflare writes api/app/rt.<domain_name>, and this root passes the
+    same apex prod does. So a dev applied with this true does not create its own
+    records -- it REPOINTS PRODUCTION'S THREE HOSTNAMES at dev's Elastic IP. The
+    apply succeeds, reports nothing unusual, and the site is down.
+
+    That matters more here than anywhere else in this repository, because dev is
+    now stood up and destroyed on demand. This is a foot-gun that gets picked up
+    every rebuild.
+
+    Giving dev its own hostnames does not rescue it cheaply either:
+    api.dev.<domain> is a second-level subdomain, so Cloudflare's Universal SSL
+    does not cover it and Advanced Certificate Manager is $10/month -- more than
+    the environment it would serve.
+
+    Consequence, accepted and written down rather than discovered: the Cloudflare
+    layer is the one part of the stack dev cannot test. Reach dev with a
+    temporary security-group rule for your own address instead. See CUTOVER.md.
   EOT
   type        = bool
-  default     = true
+  default     = false
 }
 
 variable "alert_sms_numbers" {

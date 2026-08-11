@@ -250,6 +250,17 @@ module "cloudflare" {
   # address the instance actually claims on boot, and a stale literal here would
   # black-hole the whole site.
   origin_ip = module.ecs.public_ip
+
+  # Matching what dev has carried, so the zone does not quietly lose a setting
+  # at handover.
+  #
+  # Worth being honest about what this is. AGENTS.md records that the rule
+  # applies cleanly, reports enabled, and blocked nothing across 160 requests
+  # from a single address. So this is configuration parity, NOT a control to
+  # rely on, until somebody reads the dashboard's rate-limiting analytics. What
+  # actually protects the money-moving functions is db/20-post/004 revoking
+  # EXECUTE, and that holds whether or not Cloudflare is in front.
+  enable_rate_limiting = true
 }
 
 module "monitoring" {
@@ -264,24 +275,55 @@ module "monitoring" {
   # cannot drift from the thing being served.
   domain_name = var.domain_name
 
-  # OFF until cutover. This root does not own the Cloudflare zone
-  # (manage_cloudflare defaults false), so api.<domain> resolves to DEV's origin.
-  # A health check created here would either report on dev -- an alarm in the
-  # wrong environment's inbox -- or, once prod has its own hostname and before
-  # DNS moves, report Unhealthy from birth. Turn this on in the same change that
-  # moves DNS.
-  enable_external_health_check = false
+  # ON. This is the change that moves DNS, which is the condition the previous
+  # comment here named for turning it on: manage_cloudflare is now true in this
+  # root, so the same apply that creates this health check also repoints
+  # api.<domain> at prod's origin.
+  #
+  # It is the only alarm that looks from OUTSIDE AWS, and the one that catches
+  # the failure everything internal misses -- an instance that is healthy,
+  # serving, and on an address Cloudflare no longer reaches.
+  enable_external_health_check = true
 
-  # OFF for the same reason: SNS confirms a subscription by CALLING the
-  # endpoint, and prod has no functions service running to answer. Subscribing
-  # now would leave it `pending confirmation` and deliver nothing. Turn both on
-  # in the change that stands prod up.
+  # STILL OFF, AND THE REASON HAS CHANGED. The functions service now exists, so
+  # the original blocker is gone. What replaces it is a race this repository has
+  # already lost once.
+  #
+  # SNS confirms an HTTPS subscription by CALLING the endpoint, immediately,
+  # during the apply. The endpoint is api.<domain>/functions/v1/alerts/sns --
+  # the hostname this very apply is in the middle of repointing. Enabling it in
+  # the same change bets that Cloudflare has converged before SNS dials, and
+  # losing that bet fails the whole apply after a five-minute wait:
+  #
+  #   Error: waiting for SNS Topic Subscription (...) confirmation:
+  #          timeout while waiting for state to become 'false'
+  #
+  # Observed on dev on 2026-08-05, and it passed on the retry -- the worst kind
+  # of bug, self-healing so it reads as a flake. Turn this on in the FOLLOWING
+  # apply, once api.<domain> is confirmed answering from prod.
   enable_telegram_alerts = false
 
-  # OFF until prod has a backup schedule. The alarm treats absent data as
-  # breaching, deliberately, so enabling it before db-backup.yml runs here would
-  # alarm from the moment it is created.
+  # STILL OFF, and this one is a hard precondition rather than a race. The alarm
+  # treats absent data as breaching, deliberately, so it goes to ALARM the
+  # moment it is created and stays there until a backup publishes
+  # HoursSinceLastBackup for THIS environment. Nothing has ever backed prod up.
+  #
+  # Order: run db-backup.yml -f environment=prod, confirm the metric, then
+  # enable this. Turning it on first produces a page about a backup nobody has
+  # asked for yet, which is how an alarm gets muted.
   enable_backup_alarm = false
+
+  # ON, and it is the one alarm no budget can replace.
+  #
+  # Every budget watches SPEND, and spend is zero on a FREE plan -- credits
+  # absorb the bill before Cost Explorer sees it, measured at -0.0000001/day
+  # while credits fell about $1.30 a day. So every budget sits at OK until the
+  # account is suspended.
+  #
+  # dev carries this today. The moment prod serves the domain, prod is what must
+  # carry it -- and it must be here BEFORE dev is destroyed, not after, or the
+  # account spends the gap with no warning that it is heading for suspension.
+  enable_free_tier_alarm = true
 
   # Must match the namespace the containers publish to, or the game-loop alarm
   # watches nothing. Sourced from iam rather than restated, so it cannot drift.

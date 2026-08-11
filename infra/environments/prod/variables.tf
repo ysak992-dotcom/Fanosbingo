@@ -84,18 +84,15 @@ variable "manage_cloudflare" {
     Whether THIS root manages the Cloudflare zone.
 
     Both environments share one domain and therefore one zone, so exactly one of
-    them may own the DNS records and zone settings.
+    them may own the DNS records, the zone settings and the rate-limit ruleset.
 
-    FALSE until cutover. Dev currently serves api.<domain>, and two
-    Terraform states managing one DNS record is a fight neither wins: each
-    apply reverts the other, and the losing side looks like unexplained DNS
-    flapping.
-
-    At cutover this becomes true and dev's becomes false, in that order, as a
-    deliberate change with its own plan.
+    PROD OWNS THE ZONE, as of the cutover of 2026-08-11. This flipped from false
+    in the same change that set dev's to false, and the two must never both be
+    true: the zone settings would fight over one value, and Cloudflare permits
+    one ruleset per phase, so the second root to apply would fail outright.
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "alert_sms_numbers" {
