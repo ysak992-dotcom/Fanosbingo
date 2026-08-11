@@ -6,10 +6,11 @@
 > mislead you, and what is left. Five things in particular are not obvious and
 > have each cost real time —
 >
-> - **`dev` is the only environment and serves the live domain.** It is dev/staging,
->   not production — but prod has never been applied, so it is the only copy and
->   is protected accordingly. There is no separate staging.
-> - **The FREE plan's credits run out ~Nov 2026**, before the Jan 2027 expiry,
+> - **`prod` serves the live domain** since 2026-08-11. `dev` still exists and is
+>   kept as the rollback until prod has been exercised, then destroyed. Anything
+>   describing `dev` as the only environment predates the cutover — see
+>   [CUTOVER.md](CUTOVER.md).
+> - **The FREE plan's credits run out ~Oct/Nov 2026**, before the Jan 2027 expiry,
 >   and **no budget can see it** — credits absorb the bill before Cost Explorer.
 > - **RDS PITR is capped at 1 day** and cannot be raised; setting it higher
 >   fails the whole apply. Nightly dumps cover the gap — see [RESTORE.md](RESTORE.md).

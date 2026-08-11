@@ -3,9 +3,10 @@
 > **Start with [../HANDOVER.md](../HANDOVER.md).** Three things about this
 > infrastructure are not what they look like:
 >
-> - **`dev` is the only environment that exists**, and it serves the live domain.
->   It is dev/staging rather than production, but it is the only copy — so it
->   carries prod's RDS protections and its destroy path is guarded twice.
+> - **`prod` serves the live domain** since 2026-08-11; `dev` is retained as the
+>   rollback and keeps its RDS protections until it is destroyed. `manage_cloudflare`
+>   must stay `false` in `dev` — the module writes the apex hostnames, so applying
+>   `dev` with it on repoints production at dev's Elastic IP, silently.
 > - **RDS PITR is capped at 1 day by the account plan.** Raising
 >   `backup_retention_period` fails the apply, not just the setting.
 > - **The spend budgets cannot see the FREE-plan credit burn.** Spend is zero;

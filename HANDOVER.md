@@ -1,10 +1,22 @@
 # Handover — read this before changing anything
 
-**Written 2026-08-09.** For whoever picks this up next, human or agent.
+**Written 2026-08-09. Substantially corrected 2026-08-11 after the prod
+cutover.** For whoever picks this up next, human or agent.
 
-This is a **real-money game with live players**. A deposit was made by TeleBirr,
-approved, spent on a round, and a false bingo claim was correctly refused — all
-by a real person with real birr. Treat every change accordingly.
+This is a real-money game **in the sense that it is built to hold real money**,
+and it does not hold any yet. The wallet is empty on both BSC networks and no
+player balance is backed by anything — checked directly, not inferred.
+
+That is a window, not a permanent state, and it is the most useful thing on this
+page. Everything that is expensive-to-impossible once the first deposit lands —
+load testing to failure, killing the instance to time recovery, restoring a
+backup over the live database, removing the blanket table grant — is free right
+now. Do it before that changes.
+
+> This paragraph previously read "a deposit was made by TeleBirr... by a real
+> person with real birr." It was wrong, and it drove the shape of this whole
+> document and of the cutover plan for two days. If a document and the account
+> disagree, the account is right.
 
 ---
 
@@ -12,34 +24,46 @@ by a real person with real birr. Treat every change accordingly.
 
 Read these first. Each one cost real time or a real incident.
 
-### 1. `dev` is the ONLY environment, and it serves the live domain
+### 1. `prod` serves the domain. `dev` is the rollback, and is going away
+
+**This section said the opposite until 2026-08-11.** It said `dev` was the only
+environment and served the live domain, that it must therefore be protected like
+production, and that anything reading "dev is disposable" was stale. All of that
+was true when it was written and none of it is true now.
 
 Verified in the account, not inferred:
 
 ```
-terraform state       account/  dev/          (nothing else)
-EIP behind the domain fanosbingo-dev-app
-data                  4 telegram_users · 7 games · 3 deposit_requests
+terraform state       account/  dev/  prod/
+EIP behind the domain fanosbingo-prod-app   3.227.224.76
+prod                  5 services 1/1 · 122 migrations · 13 alarms, all OK
+dev                   5 services 1/1 · no DNS points at it
 ```
 
-**`dev` is the development and staging environment — it is not "production", and
-prod is planned.** But it is the only environment that exists, it is what
-`api.yisakmesifin.org` resolves to, and real birr has moved through it: a
-TeleBirr deposit was approved by an operator, spent on a round, and a false
-bingo claim correctly refused.
+`api`, `app` and `rt` resolve to Cloudflare and are proxied to **prod**. Measured
+rather than assumed: over three minutes, prod's Caddy logged 180 requests and
+dev's logged none.
 
-**So it must be protected like production until prod exists**, and it is:
-deletion protection, a required final snapshot, `apply_immediately = false`, and
-a `terraform destroy` path guarded twice. That is a consequence of it being the
-only copy, not a claim about its status.
+**`dev` is retained deliberately as the rollback**, not because anything needs
+it. It keeps its RDS protections for exactly as long as that is true. When it is
+destroyed, the S3 dumps under `dev/` survive regardless -- Object Lock holds them
+for 30 days past their write, which nothing in the account can override.
 
-Two practical consequences:
+**There was never real money in either environment.** The earlier version of this
+section said "real birr has moved through it", and that premise drove the whole
+shape of this document -- and, for a while, of the cutover plan. The wallet held
+zero BNB on both networks, checked directly. If a document and the account
+disagree, the account is right; this section is the reason that rule exists.
 
-- **There is no separate staging.** A change tested here is tested in the place
-  players use. Prefer verifying against the account (`simulate-principal-policy`,
-  a `--show` dry run, a plan) over trying something to see what happens.
-- Anything that reads **"dev is disposable, tear it down"** predates this and is
-  stale — the destroy guards will refuse it anyway.
+Two practical consequences, both changed:
+
+- **There is now somewhere to test.** `dev` is stood up, tested against and
+  destroyed -- `CUTOVER.md` records the model, and `scripts/seed-dev.sh` takes a
+  fresh one from empty to usable in a single step.
+- **`manage_cloudflare` must stay `false` in `dev`, permanently.** The module
+  writes `api`/`app`/`rt` at the apex, so a `dev` applied with it on repoints
+  production's hostnames at dev's Elastic IP. The apply succeeds, reports
+  nothing, and the site is down.
 
 ### 2. The account is on the FREE plan, and credits run out before the expiry
 
@@ -68,7 +92,7 @@ maximum available to free tier customers.
 ```
 
 Retried with `2` and refused identically — the ceiling is exactly 1. **Do not
-set `backup_retention_period` above 1 in `environments/dev`.** It does not fail
+set `backup_retention_period` above 1 in either environment.** It does not fail
 quietly; it fails the whole apply.
 
 The mitigation is nightly `pg_dump` to S3, kept 30 days
@@ -116,7 +140,7 @@ schema change  →  PR → merge → gh workflow run db-migrate.yml -f dry_run=t
 **Deploy order is migrations → `functions` → `caddy`.** Reversed at the first
 step there is a window where a player can mint a balance *and* cash it out.
 
-`terraform apply` against dev **also rolls `caddy` and `functions`** onto
+`terraform apply` against an environment **also rolls `caddy` and `functions`** onto
 whatever image the SSM pointer names. That is the pointer mechanism working, not
 drift — but an infrastructure apply is also a deploy, and it briefly drops the
 site (one instance, static host ports, `deployment_minimum_healthy_percent = 0`).
@@ -127,9 +151,9 @@ Check `ActiveGames` before applying.
 | Question | Command |
 |---|---|
 | Can a player reach the site? | `curl -s -o /dev/null -w '%{http_code}' https://api.yisakmesifin.org/healthz` |
-| Do alarms reach a human? | `./scripts/verify-alarms.sh dev --fire <alarm>` — **believe the device, not the console** |
+| Do alarms reach a human? | `./scripts/verify-alarms.sh prod --fire <alarm>` — **believe the device, not the console** |
 | Is a permission actually granted? | `aws iam simulate-principal-policy` — it caught two false pages here |
-| Did a backup land? | `aws s3 ls s3://fanosbingo-backups-<account>/dev/` |
+| Did a backup land? | `aws s3 ls s3://fanosbingo-backups-<account>/prod/` |
 | What is the free-tier runway? | `aws freetier get-account-plan-state` |
 
 ---
@@ -149,12 +173,12 @@ curl -s -o /dev/null -w '%{http_code}\n' https://api.yisakmesifin.org/healthz
 aws route53 get-health-check-status --health-check-id <id>   # 16 global probers
 
 # 2. Are the containers running?
-aws ecs describe-services --cluster fanosbingo-dev --region us-east-1 \
+aws ecs describe-services --cluster fanosbingo-prod --region us-east-1 \
   --services caddy functions ticker postgrest realtime \
   --query 'services[].[serviceName,runningCount,desiredCount]' --output text
 
 # 3. What did the service say?
-aws logs filter-log-events --log-group-name /ecs/fanosbingo-dev \
+aws logs filter-log-events --log-group-name /ecs/fanosbingo-prod \
   --start-time $(( ($(date +%s) - 900) * 1000 )) --filter-pattern '"level":"error"'
 
 # 4. Is the database reachable from the service?
@@ -175,14 +199,14 @@ that succeeds and is *wrong* needs this:
 
 ```bash
 # What is running, and what can you go back to?
-aws ecs describe-services --cluster fanosbingo-dev --region us-east-1 \
+aws ecs describe-services --cluster fanosbingo-prod --region us-east-1 \
   --services functions --query 'services[0].taskDefinition' --output text
 aws ecs list-task-definitions --region us-east-1 \
-  --family-prefix fanosbingo-dev-functions --status ACTIVE --sort DESC --max-items 5
+  --family-prefix fanosbingo-prod-functions --status ACTIVE --sort DESC --max-items 5
 
 # Roll back to the previous revision
-aws ecs update-service --cluster fanosbingo-dev --region us-east-1 \
-  --service functions --task-definition fanosbingo-dev-functions:<previous>
+aws ecs update-service --cluster fanosbingo-prod --region us-east-1 \
+  --service functions --task-definition fanosbingo-prod-functions:<previous>
 ```
 
 Images are tagged by commit SHA and ECR keeps the last 5, so what is running is
@@ -200,7 +224,7 @@ always traceable to a commit.
 >
 > ```bash
 > aws ecs deregister-task-definition --region us-east-1 \
->   --task-definition fanosbingo-dev-functions:<bad>
+>   --task-definition fanosbingo-prod-functions:<bad>
 > ```
 >
 > Otherwise treat the rollback as buying time, and fix forward.
@@ -210,10 +234,10 @@ always traceable to a commit.
 There is no SSH and no bastion, by design. Both go through SSM.
 
 ```bash
-aws ecs execute-command --cluster fanosbingo-dev --region us-east-1 \
+aws ecs execute-command --cluster fanosbingo-prod --region us-east-1 \
   --task <task-arn> --container functions --interactive --command /bin/sh
 
-source scripts/db-tunnel.sh dev     # exports DATABASE_URL, forwards to :15432
+source scripts/db-tunnel.sh prod     # exports DATABASE_URL, forwards to :15432
 psql "$DATABASE_URL" -c 'SELECT 1'
 stop_db_tunnel
 ```
