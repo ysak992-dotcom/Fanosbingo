@@ -34,6 +34,13 @@ on:
     # failure in the other.
     - cron: '0 5 * * *'
   workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment whose namespace and topic receive the reading'
+        required: true
+        type: choice
+        options: [prod, dev]
+        default: prod
 
 permissions:
   contents: read
@@ -43,13 +50,30 @@ jobs:
   runway:
     name: Publish free tier runway
     runs-on: ubuntu-latest
-    environment: dev
+
+    # PROD, NOT DEV, SINCE THE CUTOVER OF 2026-08-11.
+    #
+    # The reading itself is ACCOUNT-WIDE -- one plan, one credit balance, no
+    # per-environment version of it. What is per-environment is where it lands:
+    # the metric namespace an alarm watches, and the topic a failure publishes
+    # to. Both were hard-wired to dev, so the moment prod grew a
+    # free-tier-credits-low alarm it watched a namespace nothing published to,
+    # treated the missing datapoint as breaching, and sat in ALARM. Measured
+    # within minutes of the cutover apply.
+    #
+    # This is the alarm no budget can replace -- spend is zero while credits
+    # absorb the bill -- so it watching nothing is the worst of the six
+    # dev-targeted workflows to leave pointing at a retired environment.
+    environment: ${{ github.event.inputs.environment || 'prod' }}
+
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'prod' }}
 
     steps:
       - name: Assume AWS role
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-dev-github-deploy
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'prod' }}-github-deploy
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: free-tier-runway-${{ github.run_id }}
 
@@ -83,15 +107,15 @@ jobs:
           fi
 
           aws cloudwatch put-metric-data \
-            --namespace "FanosBingo/fanosbingo-dev" \
+            --namespace "FanosBingo/fanosbingo-${ENVIRONMENT}" \
             --metric-name FreeTierCreditsRemaining \
-            --dimensions "Environment=dev" \
+            --dimensions "Environment=${ENVIRONMENT}" \
             --value "$CREDITS" --unit None
 
           aws cloudwatch put-metric-data \
-            --namespace "FanosBingo/fanosbingo-dev" \
+            --namespace "FanosBingo/fanosbingo-${ENVIRONMENT}" \
             --metric-name FreeTierDaysToExpiry \
-            --dimensions "Environment=dev" \
+            --dimensions "Environment=${ENVIRONMENT}" \
             --value "$DAYS" --unit Count
 
           {
@@ -112,7 +136,7 @@ jobs:
           set -euo pipefail
           ACCOUNT="$(aws sts get-caller-identity --query Account --output text)"
           aws sns publish \
-            --topic-arn "arn:aws:sns:${AWS_REGION}:${ACCOUNT}:fanosbingo-dev-alerts" \
+            --topic-arn "arn:aws:sns:${AWS_REGION}:${ACCOUNT}:fanosbingo-${ENVIRONMENT}-alerts" \
             --subject "Free tier runway check FAILED" \
             --message "$(printf '%s\n' \
               'Could not read the free-tier plan state.' \

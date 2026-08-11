@@ -40,20 +40,20 @@ on:
         description: 'Environment to verify'
         required: true
         type: choice
-        options: [dev, prod]
-        default: dev
+        options: [prod, dev]
+        default: prod
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: verify-${{ github.event.inputs.environment || 'dev' }}
+  group: verify-${{ github.event.inputs.environment || 'prod' }}
   cancel-in-progress: false
 
 jobs:
   verify:
-    name: Verify (${{ github.event.inputs.environment || 'dev' }})
+    name: Verify (${{ github.event.inputs.environment || 'prod' }})
     runs-on: ubuntu-latest
 
     # DECLARED, where it previously was not.
@@ -75,10 +75,10 @@ jobs:
     #
     # The rule this establishes: any workflow that interpolates an environment
     # into a role ARN must declare that environment.
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    environment: ${{ github.event.inputs.environment || 'prod' }}
 
     env:
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'prod' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -96,7 +96,7 @@ jobs:
       - name: Assume AWS role
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'dev' }}-github-deploy
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'prod' }}-github-deploy
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: verify-${{ github.run_id }}
 

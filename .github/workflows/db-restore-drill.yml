@@ -51,8 +51,8 @@ on:
         description: 'Environment whose backups to drill'
         required: true
         type: choice
-        options: [dev, prod]
-        default: dev
+        options: [prod, dev]
+        default: prod
 
 permissions:
   contents: read
@@ -64,12 +64,12 @@ concurrency:
 
 jobs:
   drill:
-    name: Restore drill (${{ github.event.inputs.environment || 'dev' }})
+    name: Restore drill (${{ github.event.inputs.environment || 'prod' }})
     runs-on: ubuntu-latest
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    environment: ${{ github.event.inputs.environment || 'prod' }}
     timeout-minutes: 60
     env:
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'prod' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -90,7 +90,7 @@ jobs:
       - name: Assume AWS role
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'dev' }}-github-deploy
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'prod' }}-github-deploy
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: restore-drill-${{ github.run_id }}
 

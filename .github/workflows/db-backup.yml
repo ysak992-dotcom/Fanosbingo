@@ -52,8 +52,8 @@ on:
         description: 'Environment to back up'
         required: true
         type: choice
-        options: [dev, prod]
-        default: dev
+        options: [prod, dev]
+        default: prod
 
 permissions:
   contents: read
@@ -67,23 +67,23 @@ env:
 
 jobs:
   backup:
-    name: Dump ${{ github.event.inputs.environment || 'dev' }}
+    name: Dump ${{ github.event.inputs.environment || 'prod' }}
     runs-on: ubuntu-latest
 
     # Declaring the environment is what puts this behind its protection rules
     # and gives the OIDC subject `environment:<name>`. infra/modules/iam is
     # explicit that `ref:refs/heads/main` must NOT be enough to reach a role
     # that can read the database.
-    environment: ${{ github.event.inputs.environment || 'dev' }}
+    environment: ${{ github.event.inputs.environment || 'prod' }}
 
     # A second copy running while the first holds a tunnel would fight over the
     # local port and produce two objects for one night.
     concurrency:
-      group: db-backup-${{ github.event.inputs.environment || 'dev' }}
+      group: db-backup-${{ github.event.inputs.environment || 'prod' }}
       cancel-in-progress: false
 
     env:
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
+      ENVIRONMENT: ${{ github.event.inputs.environment || 'prod' }}
       AWS_REGION: ${{ vars.AWS_REGION }}
 
     steps:
@@ -103,7 +103,7 @@ jobs:
           #
           # The other database workflows already use this role; this one was the
           # odd path out.
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'dev' }}-github-deploy
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'prod' }}-github-deploy
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: db-backup-${{ github.run_id }}
 

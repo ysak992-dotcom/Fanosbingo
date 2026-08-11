@@ -379,11 +379,17 @@ module "monitoring" {
   domain_name                  = var.domain_name
   enable_external_health_check = true
 
-  # The only alarm no budget can replace. Every budget here watches SPEND, and
-  # spend is zero on a FREE plan -- credits absorb the bill before Cost Explorer
-  # sees it, so they all sit at OK until the account is suspended. See the
-  # comment on the alarm itself, and .github/workflows/free-tier-runway.yml.
-  enable_free_tier_alarm = true
+  # OFF SINCE THE CUTOVER OF 2026-08-11. PROD CARRIES THIS NOW.
+  #
+  # The reading is account-wide -- one plan, one credit balance -- so exactly one
+  # environment should publish it and exactly one should alarm on it. That is now
+  # prod, which is what serves the domain and what must not be suspended.
+  #
+  # Leaving it true here would mean free-tier-runway.yml publishing to one
+  # namespace while two alarms watch, and the one it stopped feeding sitting in
+  # ALARM on missing data -- noise on the single alarm that must never be
+  # ignored, in the environment that is about to be destroyed anyway.
+  enable_free_tier_alarm = false
 
   alert_emails = var.alert_emails
 
