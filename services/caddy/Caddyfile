@@ -30,9 +30,33 @@
 https://api.{$DOMAIN}:{$HTTPS_PORT:443} {
 	tls /etc/caddy/certs/origin.pem /etc/caddy/certs/origin.key
 
+	# THE WEBHOOK SECRET MUST NOT BE LOGGED, AND BY DEFAULT IT WAS.
+	#
+	# Caddy's access log records every request header. It redacts Authorization
+	# and Cookie on its own, so player JWTs were never exposed -- but it knows
+	# nothing about X-Telegram-Bot-Api-Secret-Token, so every genuine Telegram
+	# delivery wrote the shared secret into CloudWatch in plaintext. Observed on
+	# prod on 2026-08-11, in the log line of a request made to test the route.
+	#
+	# That header IS the only authentication on /telegram/webhook -- the handler
+	# refuses a missing one precisely because a forger simply omits it -- so
+	# anyone who can read the log group can forge updates to the bot. Reachable
+	# only by a principal with CloudWatch Logs read today (the scoped deploy
+	# roles are implicitDeny), which bounds it rather than excusing it: a secret
+	# whose whole job is to be unguessable does not belong in a log that exists
+	# to be read.
+	#
+	# `delete` rather than `hash`: nothing is served by knowing that two requests
+	# carried the same secret, and a hash of a value this short invites the
+	# obvious attack.
 	log {
 		output stdout
-		format json
+		format filter {
+			wrap json
+			fields {
+				request>headers>X-Telegram-Bot-Api-Secret-Token delete
+			}
+		}
 	}
 
 	# PostgREST.
