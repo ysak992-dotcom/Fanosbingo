@@ -24,7 +24,23 @@ now. Do it before that changes.
 
 Read these first. Each one cost real time or a real incident.
 
-### 1. `prod` serves the domain. `dev` is the rollback, and is going away
+### 1. TWO DOMAINS. `prod` is bingonova.org; `dev` is yisakmesifin.org
+
+| | prod | dev |
+|---|---|---|
+| domain | **bingonova.org** | **yisakmesifin.org** |
+| Cloudflare zone | `9bf80a12…` | `8166779c…` |
+| bot | `@BingoNovaaBot` | `@BingoNovaadevelopmentbot` |
+
+**Every command in this document names prod's domain.** Point them at
+yisakmesifin.org and you are inspecting dev -- which during a prod incident will
+look perfectly healthy and tell you nothing.
+
+`yisakmesifin.org` was prod's until 2026-08-12 and is now dev's, so anything
+older than that date naming it as production is stale rather than wrong at the
+time.
+
+### `dev` is the rollback, and is going away
 
 **This section said the opposite until 2026-08-11.** It said `dev` was the only
 environment and served the live domain, that it must therefore be protected like
@@ -60,10 +76,12 @@ Two practical consequences, both changed:
 - **There is now somewhere to test.** `dev` is stood up, tested against and
   destroyed -- `CUTOVER.md` records the model, and `scripts/seed-dev.sh` takes a
   fresh one from empty to usable in a single step.
-- **`manage_cloudflare` must stay `false` in `dev`, permanently.** The module
-  writes `api`/`app`/`rt` at the apex, so a `dev` applied with it on repoints
-  production's hostnames at dev's Elastic IP. The apply succeeds, reports
-  nothing, and the site is down.
+- **`dev` manages its own Cloudflare zone again**, since 2026-08-12. This said
+  `manage_cloudflare` must stay `false` "permanently", and that reasoning was
+  entirely about the two environments sharing an apex -- writing `api`/`app`/`rt`
+  would have repointed production. They no longer share one, so it no longer
+  would, and the Cloudflare layer stopped being the one part of the stack `dev`
+  could not test.
 
 ### 2. The account is on the FREE plan, and credits run out before the expiry
 
@@ -150,7 +168,7 @@ Check `ActiveGames` before applying.
 
 | Question | Command |
 |---|---|
-| Can a player reach the site? | `curl -s -o /dev/null -w '%{http_code}' https://api.yisakmesifin.org/healthz` |
+| Can a player reach the site? | `curl -s -o /dev/null -w '%{http_code}' https://api.bingonova.org/healthz` |
 | Do alarms reach a human? | `./scripts/verify-alarms.sh prod --fire <alarm>` — **believe the device, not the console** |
 | Is a permission actually granted? | `aws iam simulate-principal-policy` — it caught two false pages here |
 | Did a backup land? | `aws s3 ls s3://fanosbingo-backups-<account>/prod/` |
@@ -169,7 +187,7 @@ Work outward. Each step rules out a layer.
 
 ```bash
 # 1. Is it reachable at all, and from outside AWS?
-curl -s -o /dev/null -w '%{http_code}\n' https://api.yisakmesifin.org/healthz
+curl -s -o /dev/null -w '%{http_code}\n' https://api.bingonova.org/healthz
 aws route53 get-health-check-status --health-check-id <id>   # 16 global probers
 
 # 2. Are the containers running?
@@ -182,7 +200,7 @@ aws logs filter-log-events --log-group-name /ecs/fanosbingo-prod \
   --start-time $(( ($(date +%s) - 900) * 1000 )) --filter-pattern '"level":"error"'
 
 # 4. Is the database reachable from the service?
-curl -s https://api.yisakmesifin.org/functions/v1/readyz     # 503 = DB unreachable
+curl -s https://api.bingonova.org/functions/v1/readyz     # 503 = DB unreachable
 ```
 
 **A green EC2 status check does not mean players can reach you.** The classic

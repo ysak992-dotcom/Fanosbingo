@@ -6,6 +6,9 @@
 > mislead you, and what is left. Five things in particular are not obvious and
 > have each cost real time —
 >
+> - **`prod` serves `bingonova.org`; `dev` serves `yisakmesifin.org`** — separate
+>   Cloudflare zones and separate Telegram bots since 2026-08-12. `yisakmesifin.org`
+>   was prod's until then, so older references naming it production are stale.
 > - **`prod` serves the live domain** since 2026-08-11. `dev` still exists and is
 >   kept as the rollback until prod has been exercised, then destroyed. Anything
 >   describing `dev` as the only environment predates the cutover — see
@@ -48,7 +51,7 @@ Supabase project belonging to the upstream repository this is forked from. It is
 being rebuilt on infrastructure this project owns.
 
 **The game runs.** It loads inside Telegram at
-[app.yisakmesifin.org](https://app.yisakmesifin.org), the board renders and the
+[app.bingonova.org](https://app.bingonova.org), the board renders and the
 countdown ticks — driven by a server-side game loop, not by a browser tab.
 
 | Layer | State |

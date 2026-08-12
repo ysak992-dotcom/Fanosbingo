@@ -17,6 +17,12 @@ dev once to pick up the changes merged since its last apply, and confirm the SNS
 email subscription — it is still `PendingConfirmation`, so prod's email channel
 delivers nothing.
 
+> **Historical.** The domains have since split again: `prod` moved to
+> **bingonova.org** on 2026-08-12 and `dev` kept `yisakmesifin.org`. Everything
+> below describes the dev→prod cutover as it happened, so it names the domain
+> that was live at the time. Do not copy its `curl` commands without swapping
+> the host.
+
 This runbook exists because the environment serving `api.yisakmesifin.org` is
 called `dev`, and every document in this repository has had to work around that.
 The fix is to stand `prod` up, move the domain to it, and destroy `dev`.

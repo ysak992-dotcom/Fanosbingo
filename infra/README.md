@@ -214,7 +214,7 @@ check it, not so you can type it.
 | `AWS_PLANNER_ROLE_ARN` | the **planner** (read-only, pull requests) |
 | `AWS_REGION` | `us-east-1` |
 | `TF_STATE_BUCKET` | printed by the bootstrap script |
-| `DOMAIN_NAME` | `yisakmesifin.org` |
+| ~~`DOMAIN_NAME`~~ | **Removed.** Each root defaults its own `domain_name` — prod `bingonova.org`, dev `yisakmesifin.org`. CI no longer passes it: the plan job declares no `environment:`, so a GitHub variable would be resolved differently by plan and apply |
 | `ALERT_EMAIL` | where alarms go |
 | `CLOUDFLARE_ZONE_ID` | optional; enables `modules/cloudflare` |
 | `PROD_APPLY_ENABLED` | **leave unset.** Setting it to `true` is the second prod gate |
