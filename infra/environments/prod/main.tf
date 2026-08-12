@@ -306,33 +306,27 @@ module "monitoring" {
   # serving, and on an address Cloudflare no longer reaches.
   enable_external_health_check = true
 
-  # OFF FOR THE DOMAIN MOVE, AND BACK ON IMMEDIATELY AFTER. NOT A REGRESSION.
+  # BACK ON. The domain move is done and the new host answers.
   #
-  # This was true, and correctly so, from the cutover of 2026-08-11 until the
-  # move to bingonova.org.
+  # Off for exactly one apply, because changing the domain replaces this
+  # subscription and SNS confirms an HTTPS subscription by CALLING the endpoint
+  # during the apply -- api.bingonova.org could not answer until that same apply
+  # had moved DNS and restarted caddy. Deferring it turned a replacement into a
+  # clean destroy, and the plan said so before it cost anything:
   #
-  # The endpoint is api.<domain_name>/functions/v1/alerts/sns, so changing the
-  # domain REPLACES this subscription -- confirmed by reading the plan rather
-  # than discovering it during an apply:
+  #   aws_sns_topic_subscription.telegram[0] will be destroyed
+  #     (because index [0] is out of range for count)
   #
-  #   module.monitoring.aws_sns_topic_subscription.telegram[0] must be replaced
+  # api.bingonova.org now answers 200 on /healthz and /functions/v1/readyz, and
+  # its origin certificate is the bingonova one -- proven by Cloudflare being on
+  # Full (Strict) and returning 200 rather than 526. So the confirmation
+  # callback has somewhere to land.
   #
-  # SNS confirms an HTTPS subscription by CALLING the endpoint, during the
-  # apply. api.bingonova.org does not answer until its DNS records exist AND
-  # caddy has restarted with the new DOMAIN -- both of which happen in or after
-  # this same apply. So creating the subscription here waits five minutes and
-  # then fails the whole apply:
-  #
-  #   Error: waiting for SNS Topic Subscription (...) confirmation:
-  #          timeout while waiting for state to become 'false'
-  #
-  # That is the identical race modules/app_stack documents from the other side,
-  # and it cost a failed apply on 2026-08-05 when nobody expected it.
-  #
-  # TURN THIS BACK ON in the follow-up apply, once api.bingonova.org answers
-  # 200. Until then alarms reach email only -- which is a real gap, not a
-  # comfortable one, because SMS delivers nothing on this account.
-  enable_telegram_alerts = false
+  # This is the SECOND channel, not a nicety: SMS does not deliver on this
+  # account -- AWS End User Messaging is not enrolled, so SNS accepts the
+  # subscription and drops every message. Until this applies, every alarm is an
+  # email and nothing else.
+  enable_telegram_alerts = true
 
   # ON, and the precondition is now satisfied rather than assumed.
   #
