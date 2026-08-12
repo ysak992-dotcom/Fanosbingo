@@ -39,7 +39,17 @@ function AppContent({ walletUser }: AppContentProps) {
   // would tear down and rebuild its realtime subscription and its 10s interval
   // every time somebody left a game. A ref is read by the existing closure
   // without changing when it re-subscribes.
-  const dismissedGameIdRef = useRef<string | null>(null);
+  // "The user chose to leave a round they were only watching."
+  //
+  // A BOOLEAN, not a game id. It held the id so the dismissal could be scoped to
+  // one round -- which meant leaving worked until the next round started and
+  // then silently stopped, and rounds run continuously. It also had to be READ
+  // OUT of the gameId state to be set, so a null there would have left the
+  // guard inert with nothing to show for it.
+  //
+  // Cleared whenever entry is deliberate -- joining, or tapping Watch -- so
+  // this only ever suppresses the automatic entry it was written for.
+  const leftVoluntarilyRef = useRef(false);
 
   const [gameId, setGameId] = useState<string | null>(() => localStorage.getItem('gameId'));
   const [playerId, setPlayerId] = useState<string | null>(() => localStorage.getItem('playerId'));
@@ -142,6 +152,39 @@ function AppContent({ walletUser }: AppContentProps) {
         }
       }
 
+      // THE GAME THIS PLAYER IS IN, BEFORE THE NEWEST ONE THAT EXISTS.
+      //
+      // This used to be only the query below -- newest `playing` game, no
+      // reference to the user at all -- and that is what made "Back to lobby"
+      // look broken through three separate attempts to fix it.
+      //
+      // Rounds run continuously, so a player sitting in game A is pulled into
+      // game B the moment B starts. The `players` lookup underneath is scoped to
+      // whichever game this picked, so it finds no row, sets playerId to null,
+      // and GameRoom renders `isSpectator` from `!playerId`. The player is shown
+      // the Spectator panel for a round they are not in, having been taken out
+      // of the one they paid for.
+      //
+      // It also explains why the button looked DEAD rather than flaky: the
+      // dismissal below is scoped to one game id, so leaving worked until the
+      // next round started and then stopped. The dismissal logic was correct
+      // throughout -- which is why three fixes aimed at it changed nothing.
+      //
+      // So ask the question that matters first: is this user in a running game?
+      // Only if they are not does "the newest running game" mean anything, and
+      // for them entry is a choice (the Watch button) rather than something a
+      // poll does to them.
+      let ownGameId: string | null = null;
+      if (appUser) {
+        const { data: ownRows } = await supabase
+          .from('players')
+          .select('game_id, games!inner(status)')
+          .eq('telegram_user_id', appUser.id)
+          .eq('games.status', 'playing')
+          .limit(1);
+        ownGameId = ownRows?.[0]?.game_id ?? null;
+      }
+
       const { data: playingGames } = await supabase
         .from('games')
         .select('id')
@@ -149,8 +192,8 @@ function AppContent({ walletUser }: AppContentProps) {
         .order('created_at', { ascending: false })
         .limit(1);
 
-      if (playingGames && playingGames.length > 0) {
-        const activeGameId = playingGames[0].id;
+      if (ownGameId || (playingGames && playingGames.length > 0)) {
+        const activeGameId = ownGameId ?? playingGames![0].id;
 
         // Hoisted out of the `if` so the spectator check below can read it.
         // Declaring it inside was a ReferenceError at runtime, caught by
@@ -185,9 +228,23 @@ function AppContent({ walletUser }: AppContentProps) {
         // nothing.
         //
         // So a deliberate exit is honoured only for somebody with NO player row
-        // in that game. The dismissal is scoped to that game id, so the next
-        // round enters normally rather than leaving them stranded in the lobby.
-        if (!isPlayerInThisGame && dismissedGameIdRef.current === activeGameId) {
+        // in that game.
+        //
+        // NO LONGER SCOPED TO ONE GAME ID. It was, on the reasoning that "the
+        // next round enters normally rather than leaving them stranded in the
+        // lobby" -- but rounds run continuously, so the next round is never more
+        // than a moment away. The practical effect was that leaving worked until
+        // a new game started and then silently stopped, which is the difference
+        // between a button that is flaky and one that looks dead.
+        //
+        // Somebody with no card is not stranded by staying in the lobby: the
+        // lobby is where you join, and Lobby.tsx offers Watch for a round in
+        // progress. Being returned to it is what they asked for.
+        //
+        // Entering is still automatic for a PLAYER, which is the case this
+        // effect exists for -- they paid for a card and should be in the round
+        // they bought whatever else they tap.
+        if (!isPlayerInThisGame && leftVoluntarilyRef.current) {
           setGameStarted(false);
           return;
         }
@@ -337,14 +394,14 @@ function AppContent({ walletUser }: AppContentProps) {
 
     // Joining clears any prior "I left this round": they are a player now, and
     // the effect should keep them in the game they have paid for.
-    dismissedGameIdRef.current = null;
+    leftVoluntarilyRef.current = false;
     setPlayerId(result.playerId);
     setGameId(gameId);
   };
 
   const handleSpectateGame = (gameId: string) => {
     // Asking to watch it again undoes a previous "leave".
-    dismissedGameIdRef.current = null;
+    leftVoluntarilyRef.current = false;
     setGameId(gameId);
     setGameStarted(true);
     setView('game');
@@ -381,13 +438,11 @@ function AppContent({ walletUser }: AppContentProps) {
   }, []);
 
   const handleReturnToLobby = useCallback(() => {
-    // Remember WHICH game was left, so the auto-enter effect can tell "the user
-    // chose to leave this round" from "the user has not seen this round yet".
-    // Without it, clearing the state below is undone by the next poll.
-    setGameId((current) => {
-      dismissedGameIdRef.current = current;
-      return null;
-    });
+    // Record that leaving was deliberate, so the auto-enter effect can tell it
+    // from "the user has not seen this round yet". Without it, clearing the
+    // state below is undone by the next poll.
+    leftVoluntarilyRef.current = true;
+    setGameId(null);
 
     localStorage.removeItem('gameId');
     localStorage.removeItem('playerId');
