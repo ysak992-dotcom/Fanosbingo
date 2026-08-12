@@ -333,6 +333,27 @@ moved {
 # dashboard state and scripts/verify-cloudflare.sh is the only thing checking
 # them.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# manage_cloudflare = true with no zone id is a SILENT no-op, so refuse it.
+#
+# The module is count-gated on both, which means a missing zone id does not
+# fail -- it produces an environment that believes it manages its DNS and
+# manages nothing. Applied against prod that is indistinguishable from success
+# until somebody notices the records are stale, and the whole reason
+# modules/security_groups fetches Cloudflare's ranges at plan time is that a
+# silently-wrong network config is worse than a loudly-broken one.
+#
+# Same shape as terraform_data.cloudflare_range_sanity in modules/security_groups.
+# ---------------------------------------------------------------------------
+resource "terraform_data" "cloudflare_zone_required" {
+  lifecycle {
+    precondition {
+      condition     = !var.manage_cloudflare || try(trimspace(var.cloudflare_zone_id), "") != ""
+      error_message = "manage_cloudflare is true but cloudflare_zone_id is empty, so this root would manage no DNS at all while appearing to. Set the zone id for ${var.domain_name} in environments/${var.environment}/variables.tf."
+    }
+  }
+}
+
 module "cloudflare" {
   source = "../../modules/cloudflare"
 

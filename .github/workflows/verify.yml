@@ -102,6 +102,29 @@ jobs:
 
       # --- the three assertions, each independent -------------------------
 
+      # RESOLVED ONCE, FROM THIS ENVIRONMENT'S SSM.
+      #
+      # vars.DOMAIN_NAME and vars.CLOUDFLARE_ZONE_ID were single repository
+      # variables naming one domain and one zone. That was fine while both roots
+      # served the same apex; since prod moved to bingonova.org and dev kept
+      # yisakmesifin.org it would mean verifying prod's CORS header, Cloudflare
+      # settings and anonymous exposure while reporting them as dev's -- a check
+      # that passes about the wrong system, which is worse than no check.
+      #
+      # Terraform writes api_base_url from each root's own domain_name, so this
+      # cannot drift from what that environment actually serves.
+      - name: Resolve this environment's domain
+        run: |
+          set -euo pipefail
+          API="$(aws ssm get-parameter \
+            --name "/fanosbingo-${ENVIRONMENT}/app/api_base_url" \
+            --query 'Parameter.Value' --output text)"
+          DOMAIN="${API#https://api.}"
+          [ -n "$DOMAIN" ] && [ "$DOMAIN" != "$API" ] \
+            || { echo "::error::Could not derive a domain from api_base_url='${API}'"; exit 1; }
+          echo "DOMAIN_NAME=$DOMAIN" >> "$GITHUB_ENV"
+          echo "verifying ${ENVIRONMENT} at ${DOMAIN}"
+
       - name: Security detections fire, and stay quiet
         id: detections
         continue-on-error: true
@@ -113,7 +136,6 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
-          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
         run: |
           if [ -z "${CLOUDFLARE_API_TOKEN}" ] || [ -z "${CLOUDFLARE_ZONE_ID}" ]; then
             echo "::warning::Cloudflare is not configured, so its settings are unverified. This is the one place Bot Fight Mode would be caught."
@@ -131,8 +153,6 @@ jobs:
       - name: The API allows the app's origin
         id: cors
         continue-on-error: true
-        env:
-          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
         run: |
           set -uo pipefail
           APP_ORIGIN="https://app.${DOMAIN_NAME}"
@@ -180,8 +200,6 @@ jobs:
       - name: Nothing is exposed anonymously
         id: probe
         continue-on-error: true
-        env:
-          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
         run: ./scripts/probe-public-access.sh "https://api.${DOMAIN_NAME}"
 
       # --- verdict --------------------------------------------------------

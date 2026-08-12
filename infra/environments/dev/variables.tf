@@ -28,8 +28,27 @@ variable "vpc_cidr" {
 }
 
 variable "domain_name" {
-  description = "Apex domain the SPA is served from, e.g. fanosbingo.com. Used for the CORS allowed origin."
+  description = <<-EOT
+    Apex domain this environment serves.
+
+    DEFAULTED HERE RATHER THAN PASSED BY CI, and that is the point.
+
+    It used to come from a single repository variable shared by both roots,
+    which was survivable only while both roots served the same domain. They no
+    longer do.
+
+    The obvious fix -- an environment-scoped GitHub variable -- fails silently.
+    terraform.yml's PLAN job declares no `environment:`, deliberately, so its
+    OIDC subject stays `pull_request` and the read-only planner role is
+    reachable. `vars.DOMAIN_NAME` there resolves the REPOSITORY value while the
+    apply job resolves the ENVIRONMENT one, so plan and apply would disagree
+    about which domain they were building and the plan would look fine.
+
+    A per-environment property belongs in the per-environment root, where the
+    VPC CIDR, the chain id and the RPC endpoints already live.
+  EOT
   type        = string
+  default     = "yisakmesifin.org"
 }
 
 variable "github_repository" {
@@ -91,38 +110,41 @@ variable "cloudflare_zone_id" {
     The API token is NOT a variable: the provider reads CLOUDFLARE_API_TOKEN
     from the environment, so it never enters Terraform state or a plan file.
     The token needs Zone:Read, DNS:Edit, Zone Settings:Edit and, if rate
-    limiting is enabled, Zone WAF:Edit -- on this zone only.
+    limiting is enabled, Zone WAF:Edit -- and now on BOTH zones, since the two
+    environments no longer share one.
+
+    Defaulted here for the same reason domain_name is: the zone and the domain
+    are one fact, and splitting them across the root and a CI variable is how
+    they drift apart.
   EOT
   type        = string
-  default     = ""
+  default     = "8166779c73d66db7491dc1c63849cf61"
 }
 
 variable "manage_cloudflare" {
   description = <<-EOT
     Whether THIS root manages the Cloudflare zone.
 
-    FALSE, AND IT MUST STAY FALSE. Not a default to flip back when convenient.
+    TRUE SINCE 2026-08-11, AND THIS SAID THE OPPOSITE IN CAPITALS UNTIL THEN.
 
-    modules/cloudflare writes api/app/rt.<domain_name>, and this root passes the
-    same apex prod does. So a dev applied with this true does not create its own
-    records -- it REPOINTS PRODUCTION'S THREE HOSTNAMES at dev's Elastic IP. The
-    apply succeeds, reports nothing unusual, and the site is down.
+    It read "FALSE, AND IT MUST STAY FALSE", because modules/cloudflare writes
+    api/app/rt.<domain_name> and both roots passed the SAME apex. A dev applied
+    with this true did not create its own records -- it repointed production's
+    three hostnames at dev's Elastic IP, succeeding and reporting nothing.
 
-    That matters more here than anywhere else in this repository, because dev is
-    now stood up and destroyed on demand. This is a foot-gun that gets picked up
-    every rebuild.
+    That reasoning was entirely about a shared apex, and the apex is no longer
+    shared: prod serves bingonova.org and dev serves yisakmesifin.org, separate
+    Cloudflare zones in the same account. Writing api/app/rt in this zone now
+    touches nothing prod owns.
 
-    Giving dev its own hostnames does not rescue it cheaply either:
-    api.dev.<domain> is a second-level subdomain, so Cloudflare's Universal SSL
-    does not cover it and Advanced Certificate Manager is $10/month -- more than
-    the environment it would serve.
-
-    Consequence, accepted and written down rather than discovered: the Cloudflare
-    layer is the one part of the stack dev cannot test. Reach dev with a
-    temporary security-group rule for your own address instead. See CUTOVER.md.
+    It also retires the accepted consequence recorded alongside it -- that the
+    Cloudflare layer was the one part of the stack dev could not test. It can
+    now: origin lock, zone settings, and the rate-limit rule that applies
+    cleanly and does not enforce are all exercisable here, against a domain no
+    player reaches.
   EOT
   type        = bool
-  default     = false
+  default     = true
 }
 
 variable "alert_sms_numbers" {

@@ -238,6 +238,27 @@ module "app_stack" {
 # dashboard state and scripts/verify-cloudflare.sh is the only thing checking
 # them.
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# manage_cloudflare = true with no zone id is a SILENT no-op, so refuse it.
+#
+# The module is count-gated on both, which means a missing zone id does not
+# fail -- it produces an environment that believes it manages its DNS and
+# manages nothing. Applied against prod that is indistinguishable from success
+# until somebody notices the records are stale, and the whole reason
+# modules/security_groups fetches Cloudflare's ranges at plan time is that a
+# silently-wrong network config is worse than a loudly-broken one.
+#
+# Same shape as terraform_data.cloudflare_range_sanity in modules/security_groups.
+# ---------------------------------------------------------------------------
+resource "terraform_data" "cloudflare_zone_required" {
+  lifecycle {
+    precondition {
+      condition     = !var.manage_cloudflare || try(trimspace(var.cloudflare_zone_id), "") != ""
+      error_message = "manage_cloudflare is true but cloudflare_zone_id is empty, so this root would manage no DNS at all while appearing to. Set the zone id for ${var.domain_name} in environments/${var.environment}/variables.tf."
+    }
+  }
+}
+
 module "cloudflare" {
   source = "../../modules/cloudflare"
 
@@ -285,23 +306,33 @@ module "monitoring" {
   # serving, and on an address Cloudflare no longer reaches.
   enable_external_health_check = true
 
-  # ON. The race this waited for is over.
+  # OFF FOR THE DOMAIN MOVE, AND BACK ON IMMEDIATELY AFTER. NOT A REGRESSION.
   #
-  # SNS confirms an HTTPS subscription by CALLING the endpoint during the apply,
-  # and the endpoint is api.<domain>/functions/v1/alerts/sns. Enabling it in the
-  # DNS change itself would have bet that Cloudflare had converged before SNS
-  # dialled; losing that bet fails the whole apply after a five-minute wait, as
-  # it did on dev on 2026-08-05.
+  # This was true, and correctly so, from the cutover of 2026-08-11 until the
+  # move to bingonova.org.
   #
-  # api.<domain> is now confirmed answering from prod -- 200 on /healthz and
-  # /functions/v1/readyz, and prod's Caddy logged 180 requests over three
-  # minutes while dev's logged none -- so the callback has somewhere to land.
+  # The endpoint is api.<domain_name>/functions/v1/alerts/sns, so changing the
+  # domain REPLACES this subscription -- confirmed by reading the plan rather
+  # than discovering it during an apply:
   #
-  # This is the SECOND channel, not a nicety. SMS does not deliver on this
-  # account: AWS End User Messaging is not enrolled, so SNS accepts the
-  # subscription and drops every message. Without this, every alarm is an email
-  # and nothing else.
-  enable_telegram_alerts = true
+  #   module.monitoring.aws_sns_topic_subscription.telegram[0] must be replaced
+  #
+  # SNS confirms an HTTPS subscription by CALLING the endpoint, during the
+  # apply. api.bingonova.org does not answer until its DNS records exist AND
+  # caddy has restarted with the new DOMAIN -- both of which happen in or after
+  # this same apply. So creating the subscription here waits five minutes and
+  # then fails the whole apply:
+  #
+  #   Error: waiting for SNS Topic Subscription (...) confirmation:
+  #          timeout while waiting for state to become 'false'
+  #
+  # That is the identical race modules/app_stack documents from the other side,
+  # and it cost a failed apply on 2026-08-05 when nobody expected it.
+  #
+  # TURN THIS BACK ON in the follow-up apply, once api.bingonova.org answers
+  # 200. Until then alarms reach email only -- which is a real gap, not a
+  # comfortable one, because SMS delivers nothing on this account.
+  enable_telegram_alerts = false
 
   # ON, and the precondition is now satisfied rather than assumed.
   #

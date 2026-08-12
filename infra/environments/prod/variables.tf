@@ -28,8 +28,20 @@ variable "vpc_cidr" {
 }
 
 variable "domain_name" {
-  description = "Apex domain the SPA is served from, e.g. fanosbingo.com."
+  description = <<-EOT
+    Apex domain this environment serves.
+
+    bingonova.org since 2026-08-11. prod previously served yisakmesifin.org,
+    which now belongs to dev.
+
+    Defaulted here rather than passed by CI: terraform.yml's plan job declares
+    no `environment:` (deliberately, so the read-only planner role stays
+    reachable on a pull request), so an environment-scoped GitHub variable
+    would be resolved differently by plan and apply. See the same variable in
+    environments/dev.
+  EOT
   type        = string
+  default     = "bingonova.org"
 }
 
 variable "github_repository" {
@@ -67,16 +79,23 @@ variable "bsc_chain_id" {
 
 variable "cloudflare_zone_id" {
   description = <<-EOT
-    Cloudflare zone id for domain_name. Empty disables Terraform management of
-    DNS and zone settings, leaving them as dashboard state.
+    Cloudflare zone id for domain_name.
+
+    bingonova.org. DIFFERENT FROM DEV'S -- the two environments no longer share
+    a zone, which is the whole point of the split: dev can manage its own DNS
+    again without being able to touch anything prod owns.
 
     The API token is NOT a variable: the provider reads CLOUDFLARE_API_TOKEN
-    from the environment, so it never enters Terraform state or a plan file.
-    The token needs Zone:Read, DNS:Edit, Zone Settings:Edit and, if rate
-    limiting is enabled, Zone WAF:Edit -- on this zone only.
+    from the environment, so it never enters Terraform state or a plan file. It
+    needs Zone:Read, DNS:Edit, Zone Settings:Edit and Zone WAF:Edit -- on BOTH
+    zones now, not just the original one.
+
+    Defaulted here rather than passed by CI for the same reason domain_name is:
+    the zone and the domain are one fact, and splitting them across a root and a
+    CI variable is how they drift apart.
   EOT
   type        = string
-  default     = ""
+  default     = "9bf80a12fa113a34596257cd5c0ad50e"
 }
 
 variable "manage_cloudflare" {

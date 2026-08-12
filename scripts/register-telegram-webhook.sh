@@ -54,6 +54,44 @@ WEBHOOK_SECRET="$(aws ssm get-parameter --name "/${PREFIX}/telegram/webhook_secr
 [ -n "$BOT_TOKEN" ] && [ -n "$WEBHOOK_SECRET" ] || {
   echo "${RED}A secret is empty. Run sync-secrets before registering.${NC}" >&2; exit 1; }
 
+# ---------------------------------------------------------------------------
+# ONE BOT CANNOT SERVE TWO ENVIRONMENTS, AND FAILING AT IT IS SILENT.
+#
+# Telegram allows a bot exactly ONE webhook url. setWebhook does not merge or
+# reject -- it REPLACES. So registering this environment with a token another
+# environment is already using does not fail: it quietly repoints the other
+# environment's bot here, and the first anyone knows is that production's bot
+# has gone deaf while every check on production still passes.
+#
+# There is no way to detect that afterwards from this environment. getWebhookInfo
+# for the stolen bot reports a perfectly healthy registration -- pointing at the
+# wrong place.
+#
+# So compare against every OTHER environment's token before touching Telegram.
+# Compared by hash: the tokens are never printed, and equality is all that
+# matters.
+# ---------------------------------------------------------------------------
+_hash() { printf '%s' "$1" | sha256sum | cut -d' ' -f1; }
+THIS_HASH="$(_hash "$BOT_TOKEN")"
+
+for other in dev prod; do
+  [ "$other" = "$ENVIRONMENT" ] && continue
+  other_token="$(aws ssm get-parameter --name "/${PROJECT}-${other}/telegram/bot_token" \
+    --with-decryption --query 'Parameter.Value' --output text 2>/dev/null || true)"
+  [ -n "$other_token" ] && [ "$other_token" != "None" ] || continue
+  if [ "$(_hash "$other_token")" = "$THIS_HASH" ]; then
+    echo "${RED}ERROR:${NC} ${ENVIRONMENT} and ${other} hold the SAME Telegram bot token." >&2
+    echo "  A bot has one webhook. Registering ${ENVIRONMENT} would silently repoint" >&2
+    echo "  ${other}'s bot at ${DOMAIN}, and ${other} would stop receiving updates" >&2
+    echo "  with nothing reporting a fault." >&2
+    echo "" >&2
+    echo "  Create a separate bot for ${ENVIRONMENT} with @BotFather, set its token as" >&2
+    echo "  a TELEGRAM_BOT_TOKEN secret on the ${ENVIRONMENT} GitHub Environment, and" >&2
+    echo "  re-run sync-secrets before this." >&2
+    exit 1
+  fi
+done
+
 # Report what Telegram currently believes, before changing it. `has_custom_certificate`
 # and the token itself are not printed; `url` and `pending_update_count` are the
 # useful parts and neither is sensitive.

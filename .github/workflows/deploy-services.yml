@@ -178,11 +178,38 @@ jobs:
           node-version: '22'
           cache: 'npm'
 
+      # THE API URL COMES FROM THIS ENVIRONMENT'S SSM, NOT A SHARED VARIABLE.
+      #
+      # VITE_ values are COMPILE-TIME, so whatever is set here is inlined into
+      # the bundle and served to every player. vars.DOMAIN_NAME was a single
+      # repository variable, which was harmless only while both environments
+      # served the same domain. They no longer do -- prod is bingonova.org and
+      # dev is yisakmesifin.org -- so building either from a shared variable
+      # bakes ONE environment's API into the OTHER's bundle. The app would load
+      # and every call would be cross-origin to a host that refuses it.
+      #
+      # /fanosbingo-<env>/app/api_base_url is written by modules/ssm from that
+      # root's domain_name, so it cannot drift from what Caddy actually serves.
+      # Same source the chain id already uses below.
+      - name: Resolve this environment's API origin
+        if: github.event.inputs.service == 'caddy'
+        run: |
+          set -euo pipefail
+          API="$(aws ssm get-parameter \
+            --name "/fanosbingo-${ENVIRONMENT}/app/api_base_url" \
+            --query 'Parameter.Value' --output text)"
+          case "$API" in
+            https://api.*) : ;;
+            *) echo "::error::api_base_url for ${ENVIRONMENT} is '${API}', which is not an https api host. Refusing to bake it into the bundle."; exit 1 ;;
+          esac
+          echo "API_ORIGIN=$API" >> "$GITHUB_ENV"
+          echo "building the Mini App against ${API}"
+
       - name: Build the Mini App
         if: github.event.inputs.service == 'caddy'
         env:
-          VITE_SUPABASE_URL: https://api.${{ vars.DOMAIN_NAME }}
-          VITE_API_BASE_URL: https://api.${{ vars.DOMAIN_NAME }}
+          VITE_SUPABASE_URL: ${{ env.API_ORIGIN }}
+          VITE_API_BASE_URL: ${{ env.API_ORIGIN }}
           VITE_SUPABASE_ANON_KEY: ${{ vars.SPA_ANON_KEY }}
           VITE_REOWN_PROJECT_ID: ${{ vars.REOWN_PROJECT_ID }}
 

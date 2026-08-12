@@ -48,6 +48,29 @@ jobs:
   generate:
     name: Generate imports for ${{ github.event.inputs.environment }}
     runs-on: ubuntu-latest
+
+    # DECLARED, AND IT WAS NOT UNTIL 2026-08-12.
+    #
+    # This job took an `environment` INPUT, named itself after it, and wrote
+    # into infra/environments/<input>/ -- while never declaring `environment:`.
+    # Environment-scoped variables and secrets are only resolved for a job that
+    # declares one, so vars.CLOUDFLARE_ZONE_ID silently fell back to the
+    # REPOSITORY value no matter which environment was selected.
+    #
+    # Harmless while both environments shared a zone. The moment they stopped,
+    # dispatching this for prod read DEV's zone and would have written dev's
+    # records into environments/prod/cloudflare-imports.tf as prod's -- import
+    # blocks adopting the wrong zone's DNS into prod's state.
+    #
+    # Caught by using this as a read-only test of whether the Cloudflare token
+    # could reach the new zone. It answered about the old one, which is a more
+    # useful failure than the test succeeding would have been.
+    #
+    # modules/iam records the same shape for db-migrate.yml and verify.yml,
+    # where it was worse -- those build a role ARN from an input, so an
+    # undeclared environment reached prod with nobody asked to approve. This one
+    # touches no AWS role, so it was only ever wrong rather than dangerous.
+    environment: ${{ github.event.inputs.environment }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment }}
     steps:
@@ -72,9 +95,30 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ZONE_ID: ${{ vars.CLOUDFLARE_ZONE_ID }}
-          DOMAIN_NAME: ${{ vars.DOMAIN_NAME }}
+          # NOT vars.DOMAIN_NAME. Since the environments split domains, the
+          # domain is a property of the ROOT -- environments/<env>/variables.tf
+          # -- and CI no longer passes it to Terraform at all. A repository
+          # variable here would name one domain while CLOUDFLARE_ZONE_ID named
+          # the other zone, which is exactly what this probe caught: it read the
+          # bingonova zone looking for api.yisakmesifin.org, found nothing, and
+          # reported "Terraform will CREATE it" about the wrong hostname.
+          #
+          # Read from the root so the two cannot disagree.
         run: |
           set -euo pipefail
+
+          # awk RANGE, not `grep -A<n>`. The first attempt used -A20 and
+          # returned empty for dev, whose domain_name carries a long heredoc
+          # description that pushes `default` past twenty lines -- so it would
+          # have failed for one environment and worked for the other, which is
+          # the worst way for a parser to be wrong.
+          DOMAIN_NAME="$(awk '/^variable "domain_name"/,/^}/' \
+            "infra/environments/${ENVIRONMENT}/variables.tf" \
+            | grep -m1 -E '^\s*default' | sed 's/.*= *"//; s/".*//')"
+          [ -n "$DOMAIN_NAME" ] || {
+            echo "::error::Could not read domain_name from infra/environments/${ENVIRONMENT}/variables.tf"; exit 1; }
+          export DOMAIN_NAME
+          echo "domain for ${ENVIRONMENT}: ${DOMAIN_NAME}"
           OUT="infra/environments/${ENVIRONMENT}/cloudflare-imports.tf"
 
           # stderr carries the progress and warnings; stdout is the file.

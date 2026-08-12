@@ -366,7 +366,12 @@ jobs:
       - name: Probe public access
         if: github.event.inputs.dry_run != 'true'
         run: |
-          BASE="https://api.${{ vars.DOMAIN_NAME }}"
+          # This environment's own origin. vars.DOMAIN_NAME named one domain
+          # for both roots, so after the domains split it would have probed
+          # prod while reporting on dev, or the reverse.
+          BASE="$(aws ssm get-parameter \
+            --name "/fanosbingo-${ENVIRONMENT}/app/api_base_url" \
+            --query 'Parameter.Value' --output text)"
           if ! curl -sf -m 15 -o /dev/null "$BASE/healthz"; then
             echo "::warning::$BASE is not reachable; skipping the public-access probe."
             echo "(The endpoint may be scaled to zero. The probe cannot conclude anything.)"
