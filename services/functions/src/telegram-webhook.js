@@ -123,8 +123,26 @@ async function resolveGameUrl(pool, fallback, log) {
  * The bot is @BingoNovaaBot and the game is BingoNovaa. "Fanos Bingo" is the
  * repository's name and was leaking into the one place a player actually reads
  * -- the first message they ever get from the bot.
+ *
+ * SUFFIXED OUTSIDE PROD, because the two bots were indistinguishable.
+ *
+ * Since the environments took separate domains they also took separate bots:
+ * @BingoNovaaBot serves prod and a development bot serves dev. Both greeted the
+ * player with the identical "Welcome to BingoNovaa!", so the operator sent
+ * /start to the DEVELOPMENT bot, read the production brand back, and reasonably
+ * concluded the dev bot was somehow answering as prod.
+ *
+ * It was not -- routing was correct, and the logs show dev's container handled
+ * those updates while prod's saw none. But a message that gives a player no way
+ * to tell which system they are on is worth fixing even when the system beneath
+ * it is right, because the next person to see it will draw the same conclusion
+ * and go looking in the wrong place.
+ *
+ * Reads ENVIRONMENT, which app_stack sets on every container. Defaults to prod's
+ * bare name so an unset value can never decorate the production greeting.
  */
-const BOT_NAME = 'BingoNovaa';
+const ENVIRONMENT = process.env.ENVIRONMENT ?? 'prod';
+const BOT_NAME = ENVIRONMENT === 'prod' ? 'BingoNovaa' : `BingoNovaa (${ENVIRONMENT})`;
 
 /**
  * A BUTTON, NOT A LINK IN THE TEXT.
