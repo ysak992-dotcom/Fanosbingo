@@ -92,7 +92,10 @@ no application on it.
 | **No NAT Gateway, no VPC endpoints** | ~$61/mo | Instance in a public subnet with locked ingress. |
 | **SSM Parameter Store**, not Secrets Manager | ~$2/mo | No managed rotation, which none of these values use. |
 
-Single instance, single AZ. An instance failure is a 3–5 minute outage while the
+Single instance, single AZ. An instance failure is a **194-second outage** on
+prod, measured 2026-08-13 rather than estimated (dev: 99s) -- see
+`recovery-drill.yml`. The Elastic IP is re-attached by user_data, so recovery
+needs no DNS change. The outage lasts while the
 ASG replaces it; a database failure is a ~25 minute PITR restore. That is the
 deliberate trade for the budget. Stage 2 (`instance_count = 2`, `multi_az = true`)
 buys it back for ~$30 more.

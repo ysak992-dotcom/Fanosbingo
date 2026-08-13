@@ -50,7 +50,7 @@ top to bottom once, then used as reference.
    aws ecs describe-services --cluster fanosbingo-dev \
      --services ticker postgrest realtime caddy \
      --query 'services[].[serviceName,runningCount]' --output text
-   ./scripts/probe-public-access.sh https://api.yisakmesifin.org
+   ./scripts/probe-public-access.sh https://api.bingonova.org
    ./scripts/verify-detections.sh       # are the security alarms real?
    ```
 
@@ -154,7 +154,7 @@ against PostgREST, not routes. See §7.
 
 - **five** services `ACTIVE 1/1` — ticker, postgrest, realtime, caddy, functions
 - the Mini App loads inside Telegram and the game loop counts down
-- `app.yisakmesifin.org` serves the SPA; the bundle names this API and no
+- `app.bingonova.org` serves prod's SPA (`app.yisakmesifin.org` is dev's); the bundle names its own API and no
   `supabase.co`; the anon key extracted FROM the served bundle is accepted by
   PostgREST
 - ten alarms `OK`, CloudTrail logging, twelve detector assertions passing
@@ -345,17 +345,33 @@ Ordered by what blocks the most.
    there is no `initData` and the player cannot log in -- so the link is a
    button, never text. Registration is `scripts/register-telegram-webhook.sh`,
    run AFTER deploy.
-4. **`settings.telegram_bot_username` is wrong** — says `Habeshabingo91bot`,
-   the real bot is `@BingoNovaaBot`. Inherited. Nothing reads it today, which is
-   why it went unnoticed; fix it before anything does.
-5. **No capacity data at all.** `k6-spike-test.js` targets 400 concurrent and has
-   never run. `k6` is not installed — the npm entry is an autocomplete stub, not
-   the binary. `run-test.sh` now says so.
+4. ~~**`settings.telegram_bot_username` is wrong**~~ **Fixed 2026-08-13**, on both
+   environments, along with `game_url`. Worth knowing WHY it recurred: both values
+   are seeded by the migrations, so a freshly migrated environment inherits
+   `Habeshabingo91bot` and a `bolt.host` URL. prod was built clean on 2026-08-11
+   and still had them. `scripts/seed-dev.sh` sets both; the migration default is
+   the root cause and is still there.
+5. ~~**No capacity data at all.**~~ **Measured 2026-08-13.** prod serves **764
+   req/s at 200 concurrent**, lobby p95 245ms, CPU peaking at 78%, RDS connections
+   flat at 20 of ~112 — so the pool sizes three documents worried about were never
+   the constraint; CPU is. Repeatable via `load-test.yml`.
+
+   `k6-spike-test.js` still has not run: it drives `/select-card`, which needs a
+   real player JWT per virtual user. `stress-test/k6-ramp.js` drives the lobby RPC
+   instead, needs only the anon key, and therefore runs. The `k6` devDependency was
+   a placeholder package on npm and is gone; k6 is a Go binary the workflow installs.
 6. **The Cloudflare rate-limit rule does not enforce.** Applies cleanly, reports
    `enabled: true`, 160 requests from one IP blocked nothing. `/auth/telegram`
    has a per-player limiter underneath it so the endpoint is not unprotected, but
    **do not count the edge rule as a control** until someone reads the
    dashboard's rate-limiting analytics.
+
+   **Corroborated on 2026-08-13, incidentally.** The load test sent 99,392
+   requests at up to 764/s from a single runner IP and the status breakdown
+   returned **429 × 0**. That is not proof of a misconfiguration -- the rule may
+   not match this path -- but a free-plan limit of ten requests per ten seconds
+   would have produced tens of thousands of them. Whatever the rule is doing, it
+   is not limiting this.
 7. ~~**Admin auth is single factor.**~~ **Done 2026-08-08**, and the
    recommendation this entry made was followed exactly: the second factor is on
    the ACTION, not the login, because a session left open otherwise credits
@@ -435,8 +451,9 @@ obligation — see §7.
 ### Live right now (dev environment) — ✅ verified 2026-07-29
 
 ```
-https://api.yisakmesifin.org     Caddy -> PostgREST / (functions, not yet built)
-https://rt.yisakmesifin.org      Caddy -> Realtime websockets
+https://api.bingonova.org       Caddy -> PostgREST / functions        (prod)
+https://rt.bingonova.org        Caddy -> Realtime websockets         (prod)
+https://api.yisakmesifin.org    the same, in dev                     (dev)
 AWS account 292123551166, us-east-1, Elastic IP 35.153.122.186
 ```
 
@@ -1003,7 +1020,10 @@ Every one of these cost real time.
 
 ### Replacing the container instance (the only planned-outage procedure)
 
-There is one instance in one AZ, so replacing it is a **3–5 minute outage**. This
+There is one instance in one AZ, so replacing it is a **194-second outage** --
+measured on prod 2026-08-13 by terminating the instance, not estimated (dev: 99s).
+The Elastic IP is re-attached by user_data, so Cloudflare needs no DNS change.
+Repeatable: `recovery-drill.yml`. This
 is the procedure for the AMI bumps `ami-bump.yml` proposes, and for any
 launch-template change — `metadata_options`, `user_data`, `instance_type`.
 
@@ -1279,7 +1299,7 @@ Still outstanding:
 
 ### The SPA typecheck findings, triaged — a to-do list, not lint
 
-`npm run typecheck` reports 13 findings and does not pass. It is **advisory** in
+`npm run typecheck` passes with zero findings and is a **BLOCKING GATE** since 2026-08-13. It was advisory in
 `test.yml` rather than a gate, deliberately, because they are not all noise —
 reading them one at a time has already produced two real bugs and several
 half-wired features. Deleting an unused name to get a clean gate would erase the
@@ -1515,9 +1535,11 @@ Fixed in two places, because it needed both:
   routes. Ejection is the right behaviour when there is somewhere else to send
   traffic, and there is not until Stage 2. Reinstate it then.
 
-**The load question is still open.** This was never a load finding, so it says
-nothing about capacity. `stress-test/k6-spike-test.js` targets 400 concurrent and
-has still never run.
+**This was never a load finding**, so it said nothing about capacity -- and the
+load question is now answered separately: prod serves 764 req/s at 200 concurrent
+users with CPU at 78%, measured 2026-08-13 via `load-test.yml`. `k6-spike-test.js`
+still has not run, because it drives `/select-card` and needs a real player JWT
+per virtual user; `stress-test/k6-ramp.js` drives the lobby RPC instead and does.
 
 ### The balance ledger has no copy outside this region or account
 

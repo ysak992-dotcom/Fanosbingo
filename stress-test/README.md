@@ -1,28 +1,36 @@
 # Bingo Stress Testing Suite
 
-> ## Never run against the current infrastructure
+> ## The suite here has still never run. Something else did.
 >
-> ✅ Still true on 2026-08-02: **this suite has never been run** on the AWS
-> stack, so the 400-concurrent target is an aspiration rather than a measurement.
+> ❌ **Superseded 2026-08-13.** The claim below — that a single `t4g.small`
+> running five containers was an unvalidated assumption — is no longer true, but
+> it was not this suite that validated it.
 >
-> Since it was written the instance has taken on more work — the ticker now also
-> publishes `queue_health()` once a minute, and the `functions` service carries
-> the bank deposit and withdrawal routes. Neither is heavy, but the untested
-> assumption has grown rather than shrunk.
+> **What was measured**, from a GitHub runner via `.github/workflows/load-test.yml`:
 >
-> That matters because the whole architecture rests on one unvalidated
-> assumption: that a single `t4g.small` running five containers can carry the
-> load. Nothing has tested it. `AGENTS.md` §7 lists "confirm instance memory
-> stays under ~1.6 GB" as the check that would validate the instance class.
+> ```
+> prod, 200 concurrent      764 req/s    0.01% failed
+> lobby RPC   median  91ms   p95 245ms
+> edge only   median  76ms   p95 107ms
+> EC2 CPU peak 78%          RDS connections flat at 20 of ~112
+> ```
 >
-> **Point it at this API, not at Supabase.** `stress-test/.env.example` still
-> names `your-project.supabase.co`; there is no Supabase project. Use
-> `https://api.<domain>` and an anon key from `scripts/mint-anon-key.mjs`.
+> So CPU is the constraint at roughly 78% for 200 concurrent users, and the
+> connection pools — the thing three documents worried about — never were.
 >
-> **Run it against `dev` only**, and expect it to trip alarms — that is the
-> point. `fanosbingo-dev-rds-connections-high` and the CPU-credit alarms are the
-> ones to watch, since a burstable instance does not degrade gracefully once its
-> credits are gone.
+> **Why a different script.** `k6-spike-test.js` drives `/select-card`, which
+> needs a real player JWT per virtual user; that is why it never ran and still
+> has not. `k6-ramp.js` drives `get_lobby_data_instant`, the RPC every player
+> polls, and needs only the anon key. Something that runs beats something
+> comprehensive that does not.
+>
+> **Do not run this from a laptop.** The first attempt did, and at 400 VUs half
+> the requests failed while the origin sat at 25% CPU and Caddy logged 1,115 of
+> the 57,026 requests k6 believed it sent. The client ran out of sockets, and the
+> result looked exactly like a server falling over.
+>
+> **`stress-test/.env.example` still names `your-project.supabase.co`**; there is
+> no Supabase project. Use `https://api.<domain>` and an anon key.
 
 Comprehensive stress testing framework for testing the bingo application with 400 concurrent users joining within 10-30 seconds.
 
@@ -394,6 +402,9 @@ To measure the write path properly, mint a player token the way
 `services/functions/src/auth.js` does and send it as the bearer. `scripts/mint-anon-key.mjs`
 is the pattern for reading the signing secret out of SSM.
 
-**There is still no capacity data for this system.** `k6-spike-test.js` targets
-400 concurrent and has never been run at that target, so `t4g.small` is
-unvalidated under load.
+**Capacity data exists as of 2026-08-13** -- see the notice at the top of this
+file. `t4g.small` serves 764 req/s at 200 concurrent with CPU at 78%, measured
+from a runner via `load-test.yml`. It came from `k6-ramp.js`, not from this
+suite: `k6-spike-test.js` targets 400 concurrent and still has not run at that
+target, because it drives `/select-card` and needs a real player JWT per virtual
+user -- which is exactly what the paragraph above explains how to mint.
