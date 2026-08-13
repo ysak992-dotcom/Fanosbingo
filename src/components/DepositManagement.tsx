@@ -28,7 +28,7 @@ interface DepositManagementProps {
   adminKey?: string;
 }
 
-export function DepositManagement({ adminKey }: DepositManagementProps) {
+export function DepositManagement({}: DepositManagementProps) {
   const [transactions, setTransactions] = useState<DepositTransaction[]>([]);
   const [stats, setStats] = useState<DepositStats>({
     totalDeposits: 0,

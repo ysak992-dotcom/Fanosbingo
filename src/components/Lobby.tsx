@@ -55,7 +55,6 @@ export function Lobby({ onJoinGame, onSpectateGame, telegramUser }: LobbyProps) 
   const [takenNumbers, setTakenNumbers] = useState<number[]>([]);
   const [players, setPlayers] = useState<PlayerInfo[]>([]);
   const [countdown, setCountdown] = useState<number>(0);
-  const [isJoining, setIsJoining] = useState(false);
   const [registeredUser, setRegisteredUser] = useState<RegisteredUser | null>(null);
   const [isCheckingRegistration, setIsCheckingRegistration] = useState(true);
   // A COUNTER, not a boolean. WalletSummary re-reads its activity list when this
@@ -66,8 +65,10 @@ export function Lobby({ onJoinGame, onSpectateGame, telegramUser }: LobbyProps) 
   const [optimisticSelection, setOptimisticSelection] = useState<number | null>(null);
   const [processingNumbers, setProcessingNumbers] = useState<Set<number>>(new Set());
   const [timeOffset, setTimeOffset] = useState<number>(0);
-  const [isTimeSynced, setIsTimeSynced] = useState(false);
-  const [isLoadingData, setIsLoadingData] = useState(true);
+  // Set in five places and read in none: the lobby renders its countdown
+  // without waiting for the clock offset to settle.
+  const [, setIsTimeSynced] = useState(false);
+  const [, setIsLoadingData] = useState(true);
   const [cardLayoutCache, setCardLayoutCache] = useState<Map<number, number[][]>>(new Map());
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
   const [isWalletDepositModalOpen, setIsWalletDepositModalOpen] = useState(false);

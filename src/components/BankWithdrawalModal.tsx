@@ -64,7 +64,10 @@ export function BankWithdrawalModal({
   const [accountNumber, setAccountNumber] = useState('');
   const [accountName, setAccountName] = useState('');
   const [banks, setBanks] = useState<WithdrawalBank[]>([]);
-  const [isLoading, setIsLoading] = useState(false);
+  // Value unread: there is no spinner on the initial banks/balance fetch.
+  // The SUBMIT button is guarded by isSubmitting, so this is a missing
+  // indicator rather than a double-submit risk.
+  const [, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pendingWithdrawals, setPendingWithdrawals] = useState(0);
   const [isSubmitting, setIsSubmitting] = useState(false);

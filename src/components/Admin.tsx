@@ -73,7 +73,6 @@ export function Admin() {
     houseCut: 0,
     activeGames: 0,
   });
-  const [recentActivity, setRecentActivity] = useState<Array<{date: string, revenue: number, games: number}>>([]);
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -245,27 +244,16 @@ export function Admin() {
       activeGames: activeGames || 0,
     });
 
-    const last7Days = Array.from({ length: 7 }, (_, i) => {
-      const date = new Date();
-      date.setDate(date.getDate() - (6 - i));
-      return date.toISOString().split('T')[0];
-    });
-
-    const activityByDate = last7Days.map(date => {
-      const gamesOnDate = finishedGames?.filter(game =>
-        game.finished_at && game.finished_at.split('T')[0] === date
-      ) || [];
-
-      const revenue = gamesOnDate.reduce((sum, game) => sum + (game.total_pot || 0), 0);
-
-      return {
-        date: new Date(date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-        revenue,
-        games: gamesOnDate.length,
-      };
-    });
-
-    setRecentActivity(activityByDate);
+    // A SEVEN-DAY REVENUE BREAKDOWN USED TO BE COMPUTED HERE AND NEVER SHOWN.
+    //
+    // It grouped finishedGames by day and summed total_pot into
+    // { date, revenue, games } -- a panel somebody started and did not finish.
+    // No query was wasted (finishedGames is fetched above for the stats that
+    // ARE rendered), but the result went straight into state nothing read.
+    //
+    // Removed rather than left, because a value computed and discarded reads as
+    // a feature that exists. If the panel is wanted, it is a dozen lines and it
+    // should arrive with the JSX that displays it.
   };
 
   const loadUsers = async () => {

@@ -152,33 +152,41 @@ jobs:
       - name: Install
         run: npm ci --no-audit --no-fund
 
-      # ADVISORY, not a gate, and the reason is specific rather than lazy.
+      # A GATE, and the argument for it is that the build cannot do this job.
       #
-      # `npm run typecheck` does not pass on main. It reports 17 findings, and
-      # every one of them is TS6133/TS6192 -- a declaration that is never read.
-      # None affects behaviour.
+      # `npm run build` does not typecheck -- vite strips types without checking
+      # them -- so this step is the only thing between a ReferenceError and the
+      # busiest player path. It has already caught a ReferenceError in GameRoom
+      # that the build shipped happily, and a call to a function that does not
+      # exist, in a change whose build passed, on the day it became a gate.
       #
-      # The five that DID affect correctness were fixed rather than tolerated:
-      # four `Property does not exist on type 'never'` in the winning-number
-      # display and one `No overload matches this call` on
-      # `new Date(string | null)` in the return-to-lobby countdown. GameRoom.tsx
-      # now typechecks clean.
+      # IT WAS ADVISORY UNTIL 2026-08-13, deliberately, because it reported
+      # findings on main and gating on a red main teaches people to ignore it.
+      # That comment set the condition for promotion -- read each finding and
+      # either wire it up or remove it on purpose -- and warned why blanket
+      # suppression would be wrong: `onSpectateGame` was unused because spectator
+      # mode was threaded from App.tsx and never invoked, so the compiler was
+      # reporting a dead FEATURE rather than dead syntax. Deleting the prop to
+      # satisfy it would have removed the hook for something somebody intended.
       #
-      # The 17 are not swept here because at least one is a FINDING rather than
-      # noise: `onSpectateGame` is unused in Lobby.tsx, which means spectator mode
-      # is threaded from App.tsx and never invoked -- the feature is documented and
-      # dead. Deleting the prop to satisfy the compiler would remove the hook for
-      # a feature somebody intended, which is worse than the warning. Several of
-      # the unused `useState` setters may be the same story.
+      # That condition is now met. All eleven remaining findings were read: nine
+      # were dead declarations, one was a seven-day revenue breakdown computed
+      # and never rendered, and one was a missing loading indicator kept as a
+      # comment because the submit button is guarded by different state.
       #
-      # So: report, visibly, on every pull request that touches src/. Promote to a
-      # gate once each of the 17 has been read and either wired up or removed on
-      # purpose.
-      - name: typecheck (advisory)
-        continue-on-error: true
-        run: |
-          npm run typecheck || \
-            echo "::warning::typecheck reported findings. Advisory -- see the workflow comment. Real type errors are NOT tolerated; these are unused declarations."
+      # A GATE SINCE 2026-08-13, and the condition the comment above set has been
+      # met: all eleven findings were read and each was wired up or removed on
+      # purpose. Nine were dead declarations; one was a seven-day revenue panel
+      # computed and never rendered; one was a missing loading indicator, kept as
+      # a comment because the submit button is guarded by different state.
+      #
+      # Blocking matters more here than the findings did. `npm run build` does
+      # not typecheck -- vite strips types without checking them -- so this is
+      # the only thing standing between a ReferenceError and the busiest player
+      # path. It has already caught a call to a function that does not exist,
+      # in a change whose build passed, on the day this became a gate.
+      - name: typecheck
+        run: npm run typecheck
 
   migrations:
     name: migration contract

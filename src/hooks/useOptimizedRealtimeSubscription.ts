@@ -143,7 +143,6 @@ export function useGameRealtimeUpdates(
     onPlayersUpdate: () => void;
   }
 ) {
-  const subscriptionId = useRef<string>(Math.random().toString(36).substr(2, 9));
 
   useOptimizedRealtimeSubscription(
     `game:${gameId}`,

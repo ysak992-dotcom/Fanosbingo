@@ -18,7 +18,10 @@ const headerColors = [
   'bg-blue-700'
 ];
 
-export const BingoCard = memo(function BingoCard({ card, markedCells, onCellClick, calledNumbers, disabled = false, isDarkMode = false }: BingoCardProps) {
+// calledNumbers is NOT destructured: the card renders from markedCells, which
+// the server keeps authoritative. Reading it here would be a second, weaker
+// source of truth for what is marked.
+export const BingoCard = memo(function BingoCard({ card, markedCells, onCellClick, disabled = false, isDarkMode = false }: BingoCardProps) {
   // Memoize the cell rendering to avoid recalculating on every render
   const cells = useMemo(() => {
     return Array.from({ length: 5 }, (_, rowIndex) =>
