@@ -51,7 +51,7 @@ async function generateTestUsers(count: number = 400, balancePerUser: number = 1
     const batch = testUsers.slice(i, i + batchSize);
 
     try {
-      const { data, error } = await supabase
+      const { error } = await supabase
         .from('telegram_users')
         .upsert(batch, { onConflict: 'telegram_user_id' });
 

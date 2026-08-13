@@ -188,6 +188,24 @@ jobs:
       - name: typecheck
         run: npm run typecheck
 
+      # LINT, GATING ON ERRORS.
+      #
+      # Nothing ran `npm run lint` in CI at all, which HANDOVER listed as an open
+      # gap. It catches a different class from typecheck -- an empty destructuring
+      # pattern, a bad hook dependency, an unused local -- and it found one of
+      # each on the day it was added, including an empty pattern introduced hours
+      # earlier by removing an unused prop.
+      #
+      # `@typescript-eslint/no-explicit-any` is a WARNING rather than an error,
+      # deliberately, and eslint.config.js explains why: 23 exist, all in generic
+      # plumbing, and retyping them blind to make a new gate green would be
+      # changing working code for the gate's benefit. They still print.
+      #
+      # supabase/functions is excluded -- inherited Deno source that has never
+      # run in this deployment. See eslint.config.js.
+      - name: lint
+        run: npm run lint
+
   migrations:
     name: migration contract
     runs-on: ubuntu-latest

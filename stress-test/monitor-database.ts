@@ -36,7 +36,7 @@ async function monitorDatabase(intervalSeconds: number = 2, durationSeconds: num
   const startTime = Date.now();
   const endTime = startTime + (durationSeconds * 1000);
 
-  let iteration = 0;
+  
 
   const interval = setInterval(async () => {
     const now = Date.now();

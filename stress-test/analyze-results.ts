@@ -19,7 +19,7 @@ if (!supabaseUrl || !supabaseServiceKey) {
 
 const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-interface AnalysisResults {
+interface _AnalysisResults {
   totalTestPlayers: number;
   uniqueCardsSelected: number;
   duplicateAttempts: number;
