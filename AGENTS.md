@@ -1302,58 +1302,68 @@ kept because a rebuild would need it again:
 
 ---
 
-### The SPA typecheck findings, triaged — a to-do list, not lint
+### The SPA typecheck findings — all closed 2026-08-13, and one caveat
 
-`npm run typecheck` passes with zero findings and is a **BLOCKING GATE** since 2026-08-13. It was advisory in
-`test.yml` rather than a gate, deliberately, because they are not all noise —
-reading them one at a time has already produced two real bugs and several
-half-wired features. Deleting an unused name to get a clean gate would erase the
-evidence.
+`npm run typecheck` passes with **zero findings** and is a **blocking gate**. This
+section used to be a to-do list; it is kept as a record because the reasoning
+behind each verdict is worth more than the fact that the gate is green.
+
+The argument for reading them one at a time rather than sweeping them was:
+deleting an unused name to get a clean gate erases the evidence. That argument
+was right, and **it caught me out once** -- see the caveat below.
 
 Two were fixed as they were found: the five real type errors in `GameRoom.tsx`,
-and `useNetworkQuality`'s callback that was never passed to its constructor, which
-left the network indicator reporting its initial value forever.
+and `useNetworkQuality`'s callback that was never passed to its constructor,
+which left the network indicator reporting its initial value forever.
 
-**Open, with a verdict on each. Do not sweep these.**
+**How the remaining eleven were resolved.** Line numbers are deliberately absent:
+they moved when these were fixed, and a stale line reference is worse than none.
 
-| Finding | Verdict |
+| Finding | Resolution |
 |---|---|
-| `BingoCard.tsx:21` `calledNumbers` | **Product decision, not a bug.** The prop is passed and ignored: the player's own card does not highlight numbers that have been called, while GameRoom's *other* grid (`GameRoom.tsx:625`, `:698`) does. That asymmetry is plausibly the game design — the README calls this "skill and speed-based, not gambling", and spotting your own numbers is the skill. Wiring the prop up would change gameplay fairness for every player, so it needs a decision, not a fix. If the answer is "it should highlight", the change is small; if it is "it should not", delete the prop. |
-| `DepositManagement.tsx:31` `adminKey` | **Real, and part of the known admin gap.** The prop is declared and destructured and never used, so the component authenticates as nobody — its `deposit_transactions` read at line 53 goes out unauthenticated and is governed only by that table's RLS. It currently returns nothing because the table is empty, so this is **untested rather than working**. Belongs with replacing the shared admin string (§7), not before it: wiring `adminKey` into requests would only propagate a credential that is already the wrong mechanism. |
-| `Lobby.tsx:45` `isJoining` / `setIsJoining` | Neither is used. A join spinner that was never wired — newly visible now that joining works rather than 404ing, so pressing join gives no feedback at all. |
-| `Lobby.tsx:53,54` `isTimeSynced` / `isLoadingData` | The **setters** are called (6 and 3 times) and nothing reads the values. Work is being done to populate state no one renders. |
-| `Lobby.tsx:37` `onSpectateGame` | See below. |
-| `App.tsx:26` `userBalance`, `Admin.tsx:50` `recentActivity`, `BankWithdrawalModal.tsx:33` `isLoading`, `BankDepositModal.tsx:21` `telegramUserId`, `useOptimizedRealtimeSubscription.ts:146` `subscriptionId` | Same shape — state or props populated and never read. Each needs the same one-minute look before it is removed or wired. |
-| `networkOptimization.ts:34` `response` | `measureLatency()` discards the fetch response, so a failing HEAD still records a latency as though healthy. Minor, but it means the number it reports is round-trip time regardless of whether the round trip succeeded. |
+| `BingoCard` `calledNumbers` | Prop removed from the destructuring, with the reason in place: the card renders from `markedCells`, which the server keeps authoritative. Reading called numbers there would be a second and weaker source of truth for what is marked. |
+| `DepositManagement` `adminKey` | **Removed from the destructuring. THE UNDERLYING GAP IS STILL OPEN** -- see the caveat below. |
+| `Lobby` `isJoining` / `setIsJoining` | Neither was used anywhere; a join spinner that was never wired. Removed. |
+| `Lobby` `isTimeSynced` / `isLoadingData` | Setters are called, values never read. Kept as `const [, setX]` so the work still happens, with a comment saying the lobby renders its countdown without waiting for the clock offset to settle. |
+| `App` `userBalance`, `BankWithdrawalModal` `isLoading`, `BankDepositModal` `telegramUserId`, `useOptimizedRealtimeSubscription` `subscriptionId` | Dead declarations, removed. `isLoading` kept as a comment: it tracks the initial fetch and shows nothing, but the SUBMIT button is guarded by a different state, so it is a missing spinner and not a double-submit risk on a withdrawal form. |
+| `Admin` `recentActivity` | A seven-day revenue and games breakdown computed from already-fetched data and put in state nothing read. No query was wasted; the panel was never built. Removed rather than left, because a value computed and discarded reads as a feature that exists. |
+| `networkOptimization` `response` | `measureLatency()` discards the response deliberately -- only the round trip is being timed. Binding removed, comment added. |
+| `Lobby` `onSpectateGame` | See the section below; that one was a real feature gap and is now wired. |
 
-### Spectator mode is documented and dead
+> #### The caveat: removing `adminKey` erased a compiler flag on a real gap
+>
+> `DepositManagement` reads `deposit_transactions` through `supabase.from()`,
+> governed only by that table's RLS, and its one authenticated call sends
+> `Authorization: Bearer ${VITE_SUPABASE_ANON_KEY}`. **It authenticates as anon.**
+> The `adminKey` prop was the unwired half of that, and the compiler flagging it
+> was the only automated thing pointing at it.
+>
+> The prop is still declared in `DepositManagementProps`, so it is not gone -- but
+> nothing complains about it now. This is exactly the failure the old version of
+> this section warned about, committed while acting on that warning.
+>
+> **It belongs with replacing the shared admin string, not before it.** Wiring
+> `adminKey` into requests would only propagate a credential that is already the
+> wrong mechanism.
 
-`App.tsx:300` defines `handleSpectateGame`, `App.tsx:355` passes it to `Lobby` as
-`onSpectateGame`, and `Lobby.tsx` **never calls it**. There is no UI element that
-invokes it. `SPECTATOR_MODE_IMPLEMENTATION.md` describes the feature as built.
+### ~~Spectator mode is documented and dead~~ — wired since
 
-Found because it is one of the 17 remaining `typecheck` findings — an unused prop,
-which the compiler reports as noise and is in fact a feature that was wired
-halfway. Deliberately **not** "fixed" by deleting the prop to satisfy the
-compiler: that would remove the hook somebody intended, and leave the document
-describing something with no trace in the code at all.
+It is called now: `Lobby.tsx` renders a Watch control on a running round and
+invokes `onSpectateGame(activeGame.id)`. `App.tsx` defines `handleSpectateGame`
+and passes it down, as it always did.
 
-Several of the other unused `useState` setters may be the same story
-(`setIsJoining`, `isTimeSynced`, `isLoadingData` in `Lobby.tsx`) — a state that is
-declared and never updated is a spinner or a guard that never fires. Each needs
-reading individually before it is either wired up or removed.
+**This is the finding that justified reading typecheck output instead of
+sweeping it.** The compiler reported an unused prop -- indistinguishable from
+noise -- and what it was actually reporting was a feature wired halfway:
+`SPECTATOR_MODE_IMPLEMENTATION.md` described it as built, `App.tsx` passed the
+handler, and no UI element ever called it. Deleting the prop to get a clean gate
+would have satisfied the compiler and left the document describing something with
+no trace in the code at all.
 
-That is why `typecheck` is advisory in `test.yml` rather than a gate: the findings
-are a to-do list, not lint. Promote it once each has been decided.
-
-**Real type errors are not tolerated, and were fixed.** Five in `GameRoom.tsx`:
-four `Property does not exist on type 'never'` in the winning-number display, and
-one `No overload matches this call` on `new Date(string | null)` in the
-return-to-lobby countdown. The `never` cascade is worth knowing about — annotating
-the *variable* does not fix it, because control-flow analysis narrows a `let` to
-`null` after `= null` and does not track assignment inside a `forEach` callback,
-so the inferred **return type** was `null`. Annotating what the function returns
-is what fixes it.
+Worth remembering when the next unused declaration turns up. Nine of the eleven
+resolved on 2026-08-13 genuinely were dead; one was an unrendered panel; and one
+-- `DepositManagement`'s `adminKey` -- was removed from the destructuring while
+the gap underneath it is still open. See the caveat above.
 
 ### The test suites ran nowhere until 2026-07-30
 
