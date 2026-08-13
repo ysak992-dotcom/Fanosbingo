@@ -148,7 +148,7 @@ against PostgREST, not routes. See §7.
 
 ### Operational hardening that has landed since
 
-**Applied to `dev` and `account`. Prod is written, plans cleanly, never applied.**
+**Applied to all three roots. `prod` was applied 2026-08-11 and has served `bingonova.org` since the 12th; `dev` serves `yisakmesifin.org`.**
 
 ✅ Verified 2026-07-29, against the running system rather than assumed:
 
@@ -388,7 +388,10 @@ Ordered by what blocks the most.
    which `src/totp.test.mjs` runs. A dependency there is transitive code inside
    the process holding `JWT_SECRET`, the database password and whatever KMS
    returns.
-8. **Prod has never been applied.** Terraform is complete and plans cleanly.
+8. ~~**Prod has never been applied.**~~ **Applied 2026-08-11**, serving
+   `bingonova.org` since the 12th. Its first apply was blocked by
+   `backup_retention_period = 7`, which the FREE plan refuses at APPLY time and
+   not at plan time -- so "plans cleanly" was true and useless as evidence.
 9. **12 SPA typecheck findings**, triaged below. They are a to-do list, not
    lint. (The count has been 17, then 13, now 12 in three different places in
    this repository at once — `npm run typecheck` is the only source worth
@@ -1245,8 +1248,9 @@ preserved deliberately** (`/rest/v1`, `/realtime/v1`, `/functions/v1`), so all
 ~200 `supabase.from()` calls and 10 `postgres_changes` subscriptions should work
 unchanged. That was the entire point of self-hosting PostgREST and Realtime.
 
-Then: S3 + CloudFront with OAC (`infra/modules/s3_cloudfront` exists but is
-**unused and unwritten**), a `deploy-spa.yml` workflow, service-worker cache
+Then: S3 + CloudFront with OAC (there is **no** `infra/modules/s3_cloudfront` --
+this said it "exists but is unused and unwritten", which is a contradiction and
+was simply wrong), a `deploy-spa.yml` workflow, service-worker cache
 versioning in [public/sw.js](public/sw.js) with `skipWaiting`, and **deletion of
 the client-side game logic the ticker replaced** (`Lobby.tsx` game creation,
 game start, countdown roll).
@@ -1283,7 +1287,8 @@ Still outstanding:
 
 #### Then: prod
 
-**Prod has never been applied.** Before it can be:
+**Prod was applied on 2026-08-11.** This list was the pre-flight for that, and is
+kept because a rebuild would need it again:
 - Run `./scripts/bootstrap-github.sh` — creates the `prod` environment with
   required reviewers and verifies the rule is actually present
 - Set `PROD_APPLY_ENABLED=true` (deliberately unset — it is the second gate)
@@ -1374,8 +1379,10 @@ parse a real response — and then left unwired.
 
 ### Handover, 2026-08-02 — state, and what is left
 
-dev is fully deployed and has been exercised by a real player with real money.
-Prod has never been applied and inherits every fix below.
+Both environments are fully deployed: prod on `bingonova.org` since 2026-08-12,
+dev on `yisakmesifin.org`. **There has never been real money in either** -- the
+hot wallet holds zero BNB on both BSC networks, checked directly. This paragraph
+said the opposite for two days and shaped decisions accordingly.
 
 **Proven end to end, not just by test:** a TeleBirr deposit, approved by an
 operator, spent on a game, with a false BINGO correctly refused by
@@ -1607,10 +1614,10 @@ replica.
 ```
 infra/
   environments/account/       CloudTrail + account guardrails. Singleton
-  environments/{dev,prod}/    Terraform roots. prod is complete but NEVER applied
+  environments/{dev,prod}/    Terraform roots. Both applied and serving
     ami.tf                    One-line pinned AMI. Bumped by pull request
   modules/                    vpc · security_groups · kms · ssm · iam · rds
-                              ecr · ecs · ecs_service · s3_cloudfront · monitoring
+                              ecr · ecs · ecs_service · monitoring
                               app_stack · cloudtrail · cloudflare
     app_stack/                ALL five services, called by both roots
     cloudtrail/               The trail, and the detections that justify it

@@ -51,8 +51,8 @@ Engineering context and the reasoning behind these decisions live in
 infra/
 ├── environments/
 │   ├── account/ # CloudTrail + account guardrails. SINGLETON, applied on demand.
-│   ├── dev/     # BSC testnet. NOT always-on — apply, test, destroy.
-│   └── prod/    # BSC mainnet. Written, plans cleanly, NEVER APPLIED.
+│   ├── dev/     # BSC testnet, yisakmesifin.org. Apply, test, destroy.
+│   └── prod/    # BSC mainnet, bingonova.org. APPLIED 2026-08-11, serving.
 │       └── ami.tf          one pinned AMI id, bumped by pull request
 └── modules/
     ├── vpc/              VPC, 2 public + 2 isolated subnets, IGW, routes
@@ -67,7 +67,6 @@ infra/
     ├── app_stack/        ALL FIVE services, called by dev AND prod
     ├── cloudtrail/       the trail, and the alarms that justify it
     ├── cloudflare/       DNS + zone settings — the origin lock's other half
-    ├── s3_cloudfront/    SPA hosting (Phase 5) — still empty
     └── monitoring/       Budgets, SNS, alarms incl. the game loop
 ```
 
@@ -128,22 +127,15 @@ Manual      ──▶  plan / apply / destroy any environment (workflow_dispatch
 Authentication is OIDC — there is no AWS access key anywhere in this repository.
 Dev is deliberately not applied on merge.
 
-> **`dev` is currently the live environment.** Prod has never been applied — the
-> state bucket holds `account/` and `dev/` and nothing else, and
-> `https://api.<domain>` is served by `fanosbingo-dev`. Until cutover, dev holds
-> real player balances, and it carries prod's RDS protections — deletion
-> protection and a required final snapshot — for that reason.
+> **`prod` is the live environment**, applied 2026-08-11 and serving
+> `bingonova.org` since the 12th. `dev` serves `yisakmesifin.org` from its own
+> Cloudflare zone and is retained as the rollback until prod has been exercised.
 >
-> **PITR is capped at 1 day by the account plan**, not by choice:
-> `FreeTierRestrictionError` refuses any higher value, including 2. The real RPO
-> on player money is 24 hours until the account moves off the Free plan. See the
-> comment on the `rds` module call in `environments/dev/main.tf`.
->
-> This matters most at `destroy`. That job used to refuse `prod` and `account`
-> and wave `dev` through, which was one dropdown selection away from ending the
-> live game. It now requires the environment name to be typed, and refuses any
-> environment whose database has deletion protection on — a flag that follows
-> where the money actually is, rather than which name somebody chose.
+> This block said the opposite until 2026-08-13 — that dev was live, held real
+> player balances, and that the state bucket held only `account/` and `dev/`. It
+> holds `prod/` too, and there were never real player balances anywhere: the hot
+> wallet is empty on both BSC networks. Both roots now carry the RDS protections,
+> so nothing is lost by the correction.
 
 ### Two roles, and the split is load-bearing
 

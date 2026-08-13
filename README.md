@@ -73,7 +73,7 @@ countdown ticks — driven by a server-side game loop, not by a browser tab.
 | Database authorization | **enforced** — EXECUTE is an allowlist, `telegram_users` is owner-scoped, game state is read-only to clients, verified by `probe-public-access.sh` |
 | Crypto (wallet login, BNB deposit/withdrawal) | **deferred, not removed** — every surface is behind `VITE_CRYPTO_ENABLED`, off by default. Ethiopian players overwhelmingly do not hold cryptocurrency, so birr is the currency that matters. Code, contract and KMS key all retained |
 | Smart contract | **not deployed** — and not on the critical path while crypto is deferred |
-| Production | Terraform written, plans cleanly, **never applied**. It inherits every fix below, so its first apply starts from a corrected baseline |
+| Production | **Applied 2026-08-11 and serving `bingonova.org` since 2026-08-12.** 5 services, 122 migrations, 13 alarms, nightly backups. `dev` serves `yisakmesifin.org` and is retained as the rollback |
 
 **The money round trip is closed:** deposit by bank, play, withdraw by bank. That is
 the whole loop, with no wallet anywhere in it.
@@ -94,9 +94,12 @@ the whole loop, with no wallet anywhere in it.
 > ordering and its "things that will bite you" are still accurate. Where the two
 > disagree, HANDOVER.md is newer.
 
-Everything below was found or built on **2026-08-01/02**. dev is fully deployed
-and has been exercised by a real player with real money; **prod has never been
-applied**.
+Everything below was found or built on **2026-08-01/02**, and two of its premises
+are now wrong. **prod was applied on 2026-08-11** and has served the live domain
+since the 12th. And there has never been real money in either environment — the
+hot wallet holds zero BNB on both BSC networks, checked directly. That second
+claim shaped this document and the cutover plan for two days before anyone
+checked it.
 
 ### What has actually been proven end to end
 
@@ -362,9 +365,11 @@ Security**.
 > `/rest/v1/telegram_users?select=totp_secret` would have handed the secret to
 > the owner of that row, who is exactly the attacker with a stolen session.
 
-**5. Production.** Terraform is written and plans cleanly, never applied. Needs
-mainnet values and a funded wallet. Run the restore drill against prod once —
-dev's 8–11 minute figure is not prod's.
+**5. ~~Production.~~ Applied 2026-08-11**, serving `bingonova.org` since the 12th.
+Since then it has been load tested (764 req/s at 200 concurrent, CPU 78%), had its
+instance terminated to measure recovery (**194s**, Elastic IP re-attached), and had
+a backup restored over a live database (190s). All three are repeatable —
+`load-test.yml`, `recovery-drill.yml`, and RESTORE.md.
 
 **Measured, not assumed** (2026-08-13): prod serves **764 req/s at 200 concurrent
 users**, lobby p95 245ms, CPU peaking at 78% — and recovers from losing its
@@ -381,9 +386,11 @@ Cloudflare's cache.
 
 ### Because dev is the live environment, dev now carries prod's protections
 
-This section of the README has said since 2026-08-01 that dev holds real player
-money and prod has never been applied. The **configuration had not caught up with
-that sentence**, which is a different failure from not knowing:
+This section of the README said from 2026-08-01 that dev held real player money
+and prod had never been applied. Both are now false — prod was applied on
+2026-08-11, and there was never real money anywhere — but the lesson it records
+is worth keeping, because the **configuration had not caught up with that
+sentence**, which is a different failure from not knowing:
 
 - `infra/environments/dev/main.tf` still read `deletion_protection = false`,
   `skip_final_snapshot = true`, under a comment saying dev is disposable. The
