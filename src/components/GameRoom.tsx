@@ -699,6 +699,30 @@ export function GameRoom({
                   </div>
                 )}
 
+                {/* A BUTTON, ALWAYS, ON A FINISHED GAME.
+                    Until now the only way out of this modal was a timer: a
+                    countdown when the game carries return_to_lobby_at, and an
+                    invisible 7-second fallback when it does not. When neither
+                    fired -- and for a while onReturnToLobby was withheld from
+                    players entirely, so neither could -- the player was left
+                    looking at "Game Over" with nothing to press.
+
+                    Offered to everyone here, unlike the spectator button during
+                    play. That one is withheld from players because leaving a
+                    RUNNING round is how somebody loses a bingo they had won.
+                    This game is over: there is no stake left to protect, and no
+                    reason to make anyone wait out a countdown they cannot see. */}
+                {onReturnToLobby && (
+                  <div className="mt-6 pt-6 border-t border-gray-200 text-center">
+                    <button
+                      onClick={onReturnToLobby}
+                      className="rounded-xl bg-blue-600 px-6 py-3 text-base font-semibold text-white shadow-lg transition-colors hover:bg-blue-700"
+                    >
+                      Back to lobby
+                    </button>
+                  </div>
+                )}
+
                 {returnCountdown !== null && returnCountdown > 0 && (
                   <div className="mt-6 pt-6 border-t border-gray-200">
                     <div className="text-center">
