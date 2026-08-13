@@ -125,33 +125,56 @@ jobs:
       # WHAT THE ORIGIN THOUGHT, not just what the client saw. The laptop run
       # was only diagnosable because these were checked afterwards: 25% CPU and
       # flat connections are what proved the failures were not the server.
+      # NEVER FAILS THE RUN. This reports ON the load test; it is not the load
+      # test. A red run must mean the system misbehaved under load, not that a
+      # diagnostic could not read a metric -- the previous version failed the
+      # whole workflow on an AccessDenied while the test itself passed with
+      # 0.00% errors, which is precisely the false-alarm shape this repository
+      # keeps having to correct.
       - name: What the origin actually did
         if: always()
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
           since=$(( ($(date +%s) - 900) ))
 
-          # LOOKED UP, NOT CONSTRUCTED. The first version passed
-          # "fanosbingo-<env>-app" as the AutoScalingGroupName, and Terraform
-          # appends a generated suffix -- the real name is
-          # fanosbingo-prod-app-34a22636172d595bf89ca384dd. CloudWatch does not
-          # error on a dimension that matches nothing; it returns an empty set.
-          # So the step printed nothing, exited zero, and the comparison that
-          # made the whole 400-VU result interpretable was silently absent from
-          # the first run.
-          ASG="$(aws autoscaling describe-auto-scaling-groups \
-            --query "AutoScalingGroups[?starts_with(AutoScalingGroupName, 'fanosbingo-${ENVIRONMENT}-app')].AutoScalingGroupName | [0]" \
-            --output text)"
-          [ -n "$ASG" ] && [ "$ASG" != "None" ] \
-            || { echo "::warning::No autoscaling group matching fanosbingo-${ENVIRONMENT}-app; origin CPU will be unavailable."; ASG="none"; }
-          echo "origin ASG: ${ASG}"
+          # BY INSTANCE ID, USING ONLY WHAT THIS ROLE HAS.
+          #
+          # Two wrong versions preceded this, and both failed silently or late:
+          #
+          #   1. AutoScalingGroupName built as "fanosbingo-<env>-app". Terraform
+          #      appends a generated suffix, so the dimension matched nothing --
+          #      and CloudWatch does not error on that, it returns an empty set.
+          #      The step printed no rows and exited zero.
+          #   2. Looking the group up with autoscaling:DescribeAutoScalingGroups,
+          #      which the scoped deploy role does not have:
+          #
+          #        AccessDenied ... not authorized to perform:
+          #        autoscaling:DescribeAutoScalingGroups
+          #
+          #      It passed locally because it was tested as an administrator --
+          #      the same mistake that hid the GetParametersByPath gap, and the
+          #      reason modules/iam keeps saying to use the IAM simulator.
+          #
+          # Confirmed with simulate-principal-policy against this exact role:
+          # ec2:DescribeInstances allowed, cloudwatch:GetMetricStatistics
+          # allowed, autoscaling:DescribeAutoScalingGroups implicitDeny. So the
+          # instance is found by tag -- which db-tunnel.sh already does, for the
+          # same reason: the ASG replaces instances and the id changes.
+          IID="$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=fanosbingo-${ENVIRONMENT}-app" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text 2>/dev/null || echo None)"
+          [ -n "$IID" ] && [ "$IID" != "None" ] \
+            || { echo "::warning::No running instance tagged fanosbingo-${ENVIRONMENT}-app; origin CPU unavailable."; IID=""; }
+          echo "origin instance: ${IID:-unavailable}"
           {
             echo ""
             echo "### Origin during the run"
             echo ""
             echo '```'
-            aws cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name CPUUtilization \
-              --dimensions Name=AutoScalingGroupName,Value="$ASG" \
+            [ -n "$IID" ] && aws cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name CPUUtilization \
+              --dimensions Name=InstanceId,Value="$IID" \
               --start-time "$(date -u -d @${since} +%FT%TZ)" --end-time "$(date -u +%FT%TZ)" \
               --period 60 --statistics Maximum \
               --query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Maximum]' --output text \
