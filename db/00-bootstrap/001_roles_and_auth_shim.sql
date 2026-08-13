@@ -301,8 +301,25 @@ GRANT USAGE ON SCHEMA public TO anon, authenticated, service_role;
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT SELECT ON TABLES TO anon;
 
+-- SELECT ONLY, since 2026-08-13. This granted INSERT, UPDATE and DELETE too.
+--
+-- db/20-post/012 exists to take those back, and it works -- but it runs LAST,
+-- after all 122 migration files. This runs FIRST, by necessity: ALTER DEFAULT
+-- PRIVILEGES only affects tables created afterwards. So every table created in
+-- between was client-writable, for the whole duration of a migration run --
+-- measured at 190 seconds against prod -- while the API stayed live.
+--
+-- That window was the only thing the blanket grant ever bought. Nothing needs
+-- it: every client write goes through a SECURITY DEFINER function called by
+-- app_service, which is what 004 and 012 established and what the withdrawal
+-- and deposit routes were rewritten to use.
+--
+-- 012 KEEPS ITS REVOKE. It is now a no-op against a correct bootstrap, which is
+-- exactly what a belt-and-braces control should be -- and its probe still
+-- proves a newly created table is unwritable, which is the assertion that would
+-- catch this being reintroduced.
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
-  GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO authenticated;
+  GRANT SELECT ON TABLES TO authenticated;
 
 ALTER DEFAULT PRIVILEGES IN SCHEMA public
   GRANT ALL ON TABLES TO service_role;

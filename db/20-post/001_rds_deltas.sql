@@ -118,7 +118,11 @@ END $$;
 -- decide whether the table is reachable at all.
 -- ---------------------------------------------------------------------------
 GRANT SELECT ON ALL TABLES IN SCHEMA public TO anon;
-GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO authenticated;
+-- SELECT ONLY. This read `SELECT, INSERT, UPDATE, DELETE` until 2026-08-13,
+-- and db/20-post/012 revoked the writes eleven files later -- so the grant
+-- existed only to be removed, and the gap between the two was a window in which
+-- every table was client-writable.
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO authenticated;
 GRANT ALL ON ALL TABLES IN SCHEMA public TO service_role;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO anon, authenticated, service_role;
 

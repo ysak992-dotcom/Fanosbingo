@@ -73,6 +73,35 @@ COMMENT ON TABLE schema_migrations IS
   'Applied migrations. checksum is SHA-256 of the file; a mismatch means an already-applied migration was edited.';
 SQL
 
+# Milliseconds since the epoch, portably.
+#
+# `date +%s%3N` ASSUMES GNU coreutils honours the %3N width modifier. Where it
+# does not, %N emits nine digits and the "milliseconds" are nanoseconds -- so a
+# file taking two seconds produces a duration of 2,000,000,000, and
+# schema_migrations.duration_ms is an `integer`:
+#
+#   ERROR:  integer out of range
+#
+# Which is a spectacularly unhelpful thing to be told while migrating a
+# database. Worse, it is raised by the RECORDING insert, after the migration has
+# already been applied and committed -- so the run aborts having done the work
+# without writing it down, and the next run re-applies from the top.
+#
+# Found on 2026-08-13 on an Ubuntu 26.04 workstation; CI never hit it because
+# the runners honour %3N. A timing nicety is not worth a failed migration on
+# somebody's laptop, so this degrades to whole seconds where it has to.
+_now_ms() {
+  local t
+  t="$(date +%s%3N 2>/dev/null || echo '')"
+  case "$t" in
+    ''|*[!0-9]*) echo $(( $(date +%s) * 1000 )) ;;
+    # 13 digits is milliseconds-since-epoch and will be until the year 2286.
+    # Anything longer is a finer unit that %3N failed to truncate.
+    ??????????????*) echo $(( $(date +%s) * 1000 )) ;;
+    *) echo "$t" ;;
+  esac
+}
+
 # ---------------------------------------------------------------------------
 # Build the ordered file list
 #
@@ -151,7 +180,7 @@ update the recorded checksum deliberately:
   else
     printf "  applying %-70s" "$rel"
   fi
-  start_ms=$(date +%s%3N)
+  start_ms=$(_now_ms)
 
   # --single-transaction so a failure rolls back cleanly. The bootstrap file
   # reads DB_AUTHENTICATOR_PASSWORD from the environment via \getenv rather than
@@ -165,7 +194,7 @@ update the recorded checksum deliberately:
     die "Migration failed: $rel (nothing was committed)"
   fi
 
-  duration=$(( $(date +%s%3N) - start_ms ))
+  duration=$(( $(_now_ms) - start_ms ))
 
   # Upsert, so a re-applied repeatable file updates its recorded checksum and
   # timestamp rather than colliding on the primary key.
