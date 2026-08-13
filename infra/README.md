@@ -19,7 +19,7 @@ Terraform for the AWS build. Target: **~$30/month** at ~200 users, structured so
 growth is a configuration change rather than a rewrite.
 
 **State, ✅ verified 2026-08-09:** `dev` and `account` are applied and healthy —
-five services `ACTIVE 1/1`, **17 alarms** in the account, CloudTrail logging, a
+five services `ACTIVE 1/1` in each environment, **31 alarms** in the account (13 prod, 12 dev, 2 account-wide, 4 AWS-created), CloudTrail logging, a
 dev plan reporting no changes, and the Mini App serving at `app.<domain>`.
 **`prod` is written and plans cleanly but has never been applied**, and `dev` is
 therefore the live environment.

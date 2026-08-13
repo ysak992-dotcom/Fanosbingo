@@ -463,7 +463,7 @@ AWS account 292123551166, us-east-1, Elastic IP 35.153.122.186
 | Service | State |
 |---|---|
 | ticker | running, 60 ticks/min |
-| postgrest | running, 22 relations / 46 functions |
+| postgrest | running, **24 relations / 5 functions** (was 46 functions before `db/20-post/004` revoked EXECUTE from `anon` and `authenticated`; the drop from 46 to 5 IS that hardening, measured against prod's OpenAPI document on 2026-08-13) |
 | realtime | running, v2.120.0 |
 | caddy | running, TLS via Cloudflare Origin Cert (expires 2041) |
 | **functions** | **running — auth service, built here, not ported** |

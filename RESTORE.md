@@ -6,7 +6,7 @@
 >
 > The one thing on this page that is easiest to get wrong, and worst to get
 > wrong: **`--no-privileges` does not skip RLS policies.** Restore without
-> creating `anon`, `authenticated` and `service_role` first and all 32 policies
+> creating `anon`, `authenticated` and `service_role` first and all 45 policies
 > are silently dropped — a database that looks restored and has lost its entire
 > authorization layer.
 

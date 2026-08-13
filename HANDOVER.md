@@ -87,12 +87,14 @@ Two practical consequences, both changed:
 
 ```
 plan          FREE / ACTIVE
-credits       ~$150, falling ~$1.30/day
+credits       $141.67, falling ~$2.20/day with BOTH environments running
 expiry        2027-01-14
 ```
 
-Two deadlines. **The credits bind first — roughly late November 2026**, and
-every document quotes the January date. On a FREE plan, exhausting credits
+Two deadlines. **The credits bind first — roughly mid-October 2026**, and every
+document quotes the January date. The rate doubled when prod was stood up
+alongside dev: one environment burns about $1.30/day, two burn about $2.20.
+Retiring dev is the single biggest lever on how long this runs. On a FREE plan, exhausting credits
 **suspends resources**; it does not bill.
 
 **No budget can see this.** Spend is zero because credits absorb the bill before
@@ -307,121 +309,67 @@ is the reason it is the only path in.
 
 ## Open work
 
-Ordered by what I would do next. None is blocked on anything except the last.
+**Nothing here is blocked on code.** Everything an engineer could do without a
+decision from the operator has been done; what remains needs either a person at
+a keyboard or a commercial choice.
 
-### 1. ~~"Back to lobby" does not work~~ — **FIXED, and confirmed by the operator**
+### 1. Nobody has played a full round on prod — **the only untested thing that matters**
 
-Confirmed working on 2026-08-13 in both environments. It took four attempts,
-and the first three were wrong in the same way, so what they got wrong is worth
-more than the fix.
+Deposit, approve, join, play, claim. prod has bank options, an admin, a working
+bot, a login widget, measured capacity and measured recovery. Every check in this
+repository is infrastructure; none of them tells you the game works.
 
-**The cause was never the dismissal logic**, which all three earlier fixes
-aimed at and which was correct throughout. `App.tsx` picked the game to enter as
-the NEWEST `playing` game, with no reference to the user. Rounds run
-continuously, so a player in game A was pulled into game B the moment it
-started; the `players` lookup was scoped to whichever game that picked, found no
-row, set `playerId` to null, and `GameRoom` derives `isSpectator` from
-`!playerId`. The player was shown the Spectator panel for a round they were not
-in, having been taken out of the one they paid for. It also explains the
-observation nothing else did — flipping to their own card and a BINGO button —
-which is what happens when the newest running game happens to be theirs.
+It needs a real Telegram account, so it cannot be automated from here.
 
-**And the button being fixed was the wrong button.** Two of the four pull
-requests adjusted the exit in the spectator panel, which renders only while
-`status === 'playing'`. The reported screenshot was the GAME OVER modal, which
-is separate UI and had no button at all — its only exits were a countdown shown
-when the game carries `return_to_lobby_at`, and an invisible seven-second
-fallback when it does not.
+### 2. Decide when to retire `dev`
 
-What actually shipped, in order: prefer the game the user holds a card in
-(#131); withhold the spectator exit from players, who are re-entered by design
-and cannot use it (#132); restore the automatic game-end return that #132 broke
-by withholding the callback that also drives it (#133); and put a real button on
-the Game Over modal (#134).
+It has earned its place: four SPA bugs, the blanket-grant change and both drills
+were found or proven there. It also costs roughly six weeks of runway -- two
+environments burn about $2.2/day against $145 remaining, so mid-October rather
+than early December.
 
-**The lesson, since this cost four attempts.** Every wrong fix came from
-reasoning about code structure instead of establishing which control the user
-had actually pressed — a question the original report answered in its first
-sentence. The screenshots settled it. Ask what was on screen before deciding
-what is broken.
+Retiring it is a short PR plus two applies, and `CUTOVER.md` Phase 3 lists the
+order. The `dev/` dumps in S3 survive the teardown regardless: Object Lock holds
+them 30 days past their write.
 
+### 3. `DepositManagement` authenticates as nobody
 
-### 2. Two `settings` rows still hold inherited values — **operator action**
+It reads `deposit_transactions` through `supabase.from()` under RLS alone, and
+its one authenticated call sends `VITE_SUPABASE_ANON_KEY` as the bearer. It
+returns nothing today only because the table is empty, so it is **untested rather
+than working**.
 
-Verified against the database on 2026-08-09, not inferred:
+The `adminKey` prop was the unwired half of this, and removing it from the
+destructuring during the typecheck cleanup removed the compiler's flag on it. See
+the caveat in AGENTS.md §"The SPA typecheck findings". It belongs with replacing
+the shared admin string, not before it.
 
-```
-game_url              = https://multiplayer-bingo-we-5btk.bolt.host/
-telegram_bot_username = Habeshabingo91bot          (the bot is @BingoNovaaBot)
-```
+### 4. The Cloudflare rate-limit rule still does not enforce
 
-Both are editable in **Admin → Settings**. The panel was saved on 2026-08-08 but
-these two fields were not changed, so a `setting_updated` log line is not
-evidence that a value is current — check the row.
+Applies cleanly, reports `enabled: true`, and the load test sent 99,392 requests
+at up to 764/s from one IP for **429 x 0**. Not proof of a misconfiguration --
+the rule may not match that path -- but it is not limiting anything. Do not count
+it as a control until someone reads the dashboard's rate-limiting analytics.
 
-`game_url` is now **refused** by the bot because `bolt.host` is not a host this
-deployment serves, so `/start` falls back to `app.<domain>` and logs
-`game_url_rejected`. Nothing is broken. But the row should be corrected to the
-URL you actually want players sent to, and until it is, that setting does
-nothing.
+---
 
-> **The table is keyed on `id`, not `key`.** Anything querying
-> `WHERE key = '...'` throws `column "key" does not exist`. The webhook did
-> exactly that and the error was swallowed by a fallback, so the setting was
-> silently ignored while a comment claimed the operator could change the link
-> without a deploy.
+## Recently closed, kept as a record
 
-### 2. ~~Promote `npm run typecheck` to a CI gate~~ — **done 2026-08-13**
+Each of these was open a week ago. The reasoning is in the linked commits; what
+matters here is that none of them is still work.
 
-Blocking, and main is clean. All eleven findings were read first, which was the
-condition the advisory comment set: nine were dead declarations, one was a
-seven-day revenue panel computed and never rendered, and one was a missing
-loading indicator kept as a comment because the submit button is guarded by
-different state.
+| | closed |
+|---|---|
+| "Back to lobby" | 2026-08-13, after four attempts and three wrong ones. Confirmed by the operator |
+| Two stale `settings` rows | 2026-08-13 on both environments. **They come from the migrations**, so a freshly migrated environment inherits them again -- and restoring an old backup rolls them back, which happened to dev on the 13th |
+| `npm run typecheck` as a gate | 2026-08-13, blocking, main clean at zero findings |
+| `npm run lint` in CI | 2026-08-13, blocking on errors |
+| Zero capacity data | 2026-08-13. prod: **764 req/s at 200 concurrent**, lobby p95 245ms, CPU 78%, RDS connections flat at 20 of ~112. `load-test.yml` |
+| Unmeasured MTTR | 2026-08-13. prod **194s**, dev 99s, Elastic IP re-attached so Cloudflare needs no DNS change. `recovery-drill.yml` |
+| Restore never proven | 2026-08-13, over a live database: 190s, data rolled back, stack answering after. RESTORE.md |
+| The blanket table grant | 2026-08-13, on both environments. It existed only for `012` to revoke, and the gap was a window as long as a migration run |
 
-### 3. ~~Nothing lints the SPA in CI~~ — **done 2026-08-13**
-
-Blocking on errors. `@typescript-eslint/no-explicit-any` is a WARNING and
-`supabase/functions` is excluded -- both deliberate, both explained in
-`eslint.config.js`. It found an empty destructuring pattern within a day.
-
-### 4. ~~Zero capacity data~~ — **measured 2026-08-13**
-
-From a GitHub runner. A laptop cannot generate this much load: the first attempt
-failed at 400 VUs with the origin idle at 25% CPU, because the client ran out of
-sockets, and it looked exactly like a server falling over.
-
-```
-prod, 200 concurrent      764 req/s    0.01% failed
-lobby RPC   median  91ms   p95 245ms
-edge only   median  76ms   p95 107ms
-EC2 CPU peak 78%          RDS connections flat at 20 of ~112
-```
-
-**CPU is the constraint, at roughly 78% for 200 concurrent users. The pool sizes
-never were** -- 764 requests a second went through 20 connections against a
-ceiling of about 112.
-
-Repeatable: `gh workflow run load-test.yml -f environment=<env> -f peak=200`.
-Run it against **dev** first; it is the same instance type and the same
-configuration.
-
-### 4b. Recovery, restore and the blanket grant — also closed
-
-- **MTTR is measured, not estimated.** Terminating the instance: prod recovers in
-  **194s**, dev in 99s, with the Elastic IP re-attached by `user_data` so
-  Cloudflare needs no DNS change. That re-association is the single point the
-  whole no-ALB design rests on and had never been exercised.
-  `gh workflow run recovery-drill.yml -f environment=<env> -f confirm=<env>`.
-- **A backup has been restored over a live database**, not just into a
-  throwaway -- 190s, data visibly rolled back, whole stack answering afterwards.
-  See RESTORE.md, whose "errors you should expect" section was wrong and is now
-  right.
-- **The blanket table grant is closed.** It existed only for `db/20-post/012` to
-  revoke, and the gap between them was a window -- the whole duration of a
-  migration run -- in which every table was client-writable.
-
-### 5. Deferred on cost, by the operator's decision
+### Deferred on cost, by the operator's decision
 
 Not oversight — recorded so nobody re-derives them:
 
@@ -433,7 +381,7 @@ Not oversight — recorded so nobody re-derives them:
 - **Backup retention > 1 day, Multi-AZ, a second instance** — all need the paid
   plan
 
-### 6. Untouched by request
+### Untouched by request
 
 An IAM user holds `AdministratorAccess` with a console password. Its MFA state
 is worth checking (`aws iam get-credential-report`) — it bypasses every control
