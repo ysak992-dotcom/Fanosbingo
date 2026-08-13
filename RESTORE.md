@@ -81,6 +81,28 @@ into a bad recovery.
 
 ### Errors you should expect, and what they mean
 
+**Which six depends on where you restore TO, and that was not said here.**
+Restored over the live RDS instance on 2026-08-13 -- the first time this was
+done against a running environment rather than a throwaway -- and the pg_cron
+errors below did not appear at all. pg_cron IS available on RDS, so restoring
+RDS-to-RDS produces none of them.
+
+What appeared instead was one error, and it came from the CLIENT:
+
+```
+ERROR: unrecognized configuration parameter "transaction_timeout"
+Command was: SET transaction_timeout = 0;
+```
+
+`transaction_timeout` is a PostgreSQL 17 setting. The restore was run with an
+Ubuntu-default `pg_restore` 18 against a PostgreSQL 16 server, so the client
+emitted a setting the server does not know. Harmless -- it is the first line of
+the archive, not data -- but it is exactly why `db-backup.yml` pins
+`PG_MAJOR: '16'`. **Match the client to the server** and it does not occur.
+
+So: restoring INTO plain PostgreSQL, expect the six pg_cron errors below.
+Restoring INTO RDS, expect none of them. In both cases anything else is real.
+
 Six errors are normal outside RDS. `pg_cron` is an RDS-provided extension, so on
 plain PostgreSQL you will see:
 
@@ -98,38 +120,24 @@ seventh error.
 
 ## Has this been proven?
 
-**Yes, once, by hand — not automatically.** On 2026-08-07 the dump
-`dev/2026-08-07T05-39-10Z.dump` was restored into PostgreSQL 16 and loaded:
+**Yes, over a live database, on 2026-08-13.** The 2026-08-11 dev dump was
+restored over the running dev environment with services connected:
 
 ```
-telegram_users 4 · games 7 · players 6 · deposit_requests 3 · withdrawal_requests 0
+508 KB archive, 394 TOC entries
+190 seconds
+1 error, and it was the client's (see above)
+data rolled back: games 21 -> 14, players 20 -> 12, deposits 6 -> 5
+after: healthz 200, readyz 200, app 200, rt 200, lobby RPC 200
 ```
 
-with only the six expected `pg_cron` errors. The local copy was shredded
-afterwards.
+That is the claim that matters -- not that the archive parses, but that the
+system works afterwards. The whole stack answered normally, and nothing needed
+restarting.
 
-**Automating that is unfinished, and the reason is recorded so nobody repeats
-it.** Eight CI runs could not get a throwaway PostgreSQL reachable on a GitHub
-runner: as a `services:` container the published port carried no traffic —
-`ss` showed `0.0.0.0:5433 LISTEN` while `pg_isready` got `no response` — and with
-`docker run --network host` the port was not there at all. Two causes were found
-and fixed along the way and neither was the last one: the postgres entrypoint
-does not listen on TCP until `initdb` finishes, and `PGPORT` is a libpq *client*
-variable that the server ignores.
-
-None of that says anything about whether the backups work, which is exactly why
-the check was removed rather than left warning every night — a check that always
-warns is a check nobody reads.
-
-**What still runs every night** is `pg_restore --list` against the archive
-*before* it is uploaded. That catches truncation and corruption, which are the
-failure modes an unattended dump actually has.
-
-**So: repeat the manual restore above after any schema change.** It takes about
-five minutes and it is currently the only thing that proves the dumps are worth
-keeping.
-
----
+Before that it had only been restored by hand into a throwaway PostgreSQL 16,
+which proves the archive is readable and says nothing about whether a real
+recovery leaves you with a working system.
 
 ## If a backup is missing
 

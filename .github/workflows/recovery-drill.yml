@@ -1,0 +1,209 @@
+name: Recovery drill
+
+# Kill the instance and time how long the system takes to come back.
+#
+# WHY THIS IS WORTH AUTOMATING. Instance replacement is the recovery path this
+# architecture actually depends on -- one instance, no ALB, and an Elastic IP
+# re-attached by user_data so Cloudflare never needs a DNS change. All of that
+# was asserted in comments and had never been observed.
+#
+# Measured on dev, 2026-08-13, the first time anyone ran it:
+#
+#   T+0     terminate
+#   T+88s   ASG launched the replacement
+#   T+120s  EIP re-associated by user_data
+#   T+156s  healthz 200 -- serving again
+#   ~T+240s api-unreachable cleared on its own
+#
+# Two minutes thirty-six to serving, unattended, with the address unchanged.
+# The api-unreachable alarm fired and recovered, which is the first time it has
+# caught a real outage rather than being forced into ALARM by hand.
+#
+# RE-RUN IT WHEN SOMETHING THAT AFFECTS RECOVERY CHANGES -- the AMI pin,
+# user_data, the ASG, the instance profile. A number from before those changed
+# is a number about a system that no longer exists.
+#
+# THE EXECUTOR ROLE, NOT THE SCOPED DEPLOY ROLE, and that is deliberate. The
+# deploy role cannot terminate an instance, and it should not be able to:
+# db-backup, verify, deploy-services and the drill all assume it, so granting
+# ec2:TerminateInstances for this would hand that power to every one of them.
+# Destructive infrastructure actions already go through the executor, gated by
+# the environment's reviewers -- the same path terraform destroy takes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to KILL AN INSTANCE IN. Start with dev.'
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+      confirm:
+        description: 'Type the environment name to confirm'
+        required: true
+        type: string
+        default: ''
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  drill:
+    name: Recovery drill (${{ github.event.inputs.environment }})
+    runs-on: ubuntu-latest
+
+    # Declared, so prod inherits its required reviewers. Terminating the
+    # instance that serves players is not something a dispatch should do
+    # unapproved.
+    environment: ${{ github.event.inputs.environment }}
+
+    concurrency:
+      group: recovery-drill-${{ github.event.inputs.environment }}
+      cancel-in-progress: false
+
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # TYPED CONFIRMATION, in addition to the environment's reviewers. The
+      # destroy job in terraform.yml guards the same way, for the same reason: a
+      # dropdown defaulting to something destructive is one misclick from being
+      # used.
+      - name: Confirm
+        run: |
+          set -euo pipefail
+          [ "${{ github.event.inputs.confirm }}" = "${ENVIRONMENT}" ] \
+            || { echo "::error::confirm must be exactly '${ENVIRONMENT}'."; exit 1; }
+
+      - name: Assume AWS role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: recovery-drill-${{ github.run_id }}
+
+      - name: Resolve the target
+        run: |
+          set -euo pipefail
+          API="$(aws ssm get-parameter --name "/fanosbingo-${ENVIRONMENT}/app/api_base_url" \
+            --query 'Parameter.Value' --output text)"
+          IID="$(aws ec2 describe-instances \
+            --filters "Name=tag:Name,Values=fanosbingo-${ENVIRONMENT}-app" \
+                      "Name=instance-state-name,Values=running" \
+            --query 'Reservations[0].Instances[0].InstanceId' --output text)"
+          [ -n "$IID" ] && [ "$IID" != "None" ] \
+            || { echo "::error::No running instance tagged fanosbingo-${ENVIRONMENT}-app."; exit 1; }
+          EIP="$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=fanosbingo-${ENVIRONMENT}-app" \
+            --query 'Addresses[0].PublicIp' --output text)"
+          echo "BASE=$API"  >> "$GITHUB_ENV"
+          echo "OLD_IID=$IID" >> "$GITHUB_ENV"
+          echo "EIP=$EIP"   >> "$GITHUB_ENV"
+          echo "target ${ENVIRONMENT}: instance ${IID}, EIP ${EIP}, api ${API}"
+
+      # A DRILL ON A BROKEN SYSTEM MEASURES NOTHING. If it is already down, the
+      # recovery time this reports would be recovery from something else.
+      - name: Healthy before we break it
+        run: |
+          set -euo pipefail
+          c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${BASE}/healthz")"
+          [ "$c" = "200" ] || { echo "::error::${BASE}/healthz is ${c} before the drill. Refusing."; exit 1; }
+          echo "baseline healthz 200"
+
+      - name: Terminate, and time the recovery
+        id: drill
+        run: |
+          set -euo pipefail
+          T0=$(date +%s)
+          aws ec2 terminate-instances --instance-ids "$OLD_IID" \
+            --query 'TerminatingInstances[0].CurrentState.Name' --output text
+          echo "T+0 terminated ${OLD_IID}"
+
+          NEW=""; T_LAUNCH=""; T_EIP=""; T_HEALTHY=""
+          for _ in $(seq 1 120); do
+            now=$(( $(date +%s) - T0 ))
+
+            if [ -z "$NEW" ]; then
+              N="$(aws ec2 describe-instances \
+                --filters "Name=tag:Name,Values=fanosbingo-${ENVIRONMENT}-app" \
+                          "Name=instance-state-name,Values=pending,running" \
+                --query "Reservations[].Instances[?InstanceId!='${OLD_IID}'].InstanceId|[0][0]" \
+                --output text 2>/dev/null || echo None)"
+              if [ -n "$N" ] && [ "$N" != "None" ]; then
+                NEW="$N"; T_LAUNCH=$now; echo "T+${now}s replacement launched: ${NEW}"
+              fi
+            fi
+
+            if [ -n "$NEW" ] && [ -z "$T_EIP" ]; then
+              A="$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=fanosbingo-${ENVIRONMENT}-app" \
+                --query 'Addresses[0].InstanceId' --output text 2>/dev/null || echo None)"
+              [ "$A" = "$NEW" ] && { T_EIP=$now; echo "T+${now}s EIP re-associated by user_data"; }
+            fi
+
+            if [ -n "$T_EIP" ] && [ -z "$T_HEALTHY" ]; then
+              c="$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "${BASE}/healthz" 2>/dev/null || echo 000)"
+              [ "$c" = "200" ] && { T_HEALTHY=$now; echo "T+${now}s healthz 200 -- serving again"; break; }
+            fi
+            sleep 5
+          done
+
+          {
+            echo "new_iid=${NEW}"
+            echo "t_launch=${T_LAUNCH:-}"
+            echo "t_eip=${T_EIP:-}"
+            echo "t_healthy=${T_HEALTHY:-}"
+          } >> "$GITHUB_OUTPUT"
+
+          [ -n "$T_HEALTHY" ] || { echo "::error::${ENVIRONMENT} did not return to healthz 200 within 10 minutes."; exit 1; }
+
+      # THE ADDRESS IS THE POINT. Recovery needing no DNS change is the whole
+      # reason user_data re-attaches the EIP; if it changed, Cloudflare is now
+      # pointing at nothing and the site is down however healthy the instance is.
+      - name: The address did not change
+        run: |
+          set -euo pipefail
+          NOW="$(aws ec2 describe-addresses --filters "Name=tag:Name,Values=fanosbingo-${ENVIRONMENT}-app" \
+            --query 'Addresses[0].PublicIp' --output text)"
+          [ "$NOW" = "$EIP" ] \
+            || { echo "::error::EIP changed from ${EIP} to ${NOW}. Cloudflare now points at the wrong address."; exit 1; }
+          echo "EIP unchanged: ${NOW}"
+
+      - name: Everything came back, not just the edge
+        run: |
+          set -euo pipefail
+          for _ in $(seq 1 40); do
+            counts="$(aws ecs describe-services --cluster "fanosbingo-${ENVIRONMENT}" \
+              --services caddy functions ticker postgrest realtime \
+              --query 'services[].runningCount' --output text | tr -d '\t ')"
+            [ "$counts" = "11111" ] && { echo "all five services 1/1"; break; }
+            sleep 15
+          done
+          r="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${BASE}/functions/v1/readyz")"
+          [ "$r" = "200" ] && [ "$counts" = "11111" ] \
+            || { echo "::error::incomplete recovery: services='${counts}' readyz=${r}"; exit 1; }
+          echo "readyz 200"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Recovery drill — ${ENVIRONMENT}"
+            echo ""
+            echo "| stage | at |"
+            echo "|---|---|"
+            echo "| replacement launched | ${{ steps.drill.outputs.t_launch }}s |"
+            echo "| EIP re-associated | ${{ steps.drill.outputs.t_eip }}s |"
+            echo "| **serving again** | **${{ steps.drill.outputs.t_healthy }}s** |"
+            echo ""
+            echo "- old instance: \`${OLD_IID}\`"
+            echo "- new instance: \`${{ steps.drill.outputs.new_iid }}\`"
+            echo "- EIP: \`${EIP}\` (unchanged, so Cloudflare needed no DNS change)"
+            echo ""
+            echo "Baseline from the first run on dev, 2026-08-13: launched 88s, EIP 120s,"
+            echo "serving 156s. A materially worse number means something in the AMI,"
+            echo "user_data or the ASG has changed."
+          } >> "$GITHUB_STEP_SUMMARY"
