@@ -138,9 +138,13 @@ cannot fail is worse than no test.
 Vite does not run TypeScript. A `ReferenceError` on the main player path passed
 `npm run build` and was caught only by `npm run typecheck`.
 
-**Run `npm run typecheck` before shipping SPA changes.** It is advisory in CI
-(11 findings, all unused-variable noise) and should be promoted to a gate once
-those are read — see Open work.
+**Run `npm run typecheck` before shipping SPA changes.** It is a BLOCKING GATE
+in CI since 2026-08-13, and main is clean — all eleven findings were read and
+either wired up or removed on purpose, which was the condition the advisory
+comment set for promoting it.
+
+It keeps earning it. On the day it became a gate it caught a call to a function
+that does not exist, in a change whose `npm run build` passed.
 
 ---
 
@@ -269,124 +273,42 @@ is the reason it is the only path in.
 
 Ordered by what I would do next. None is blocked on anything except the last.
 
-### 1. "Back to lobby" does not work — **STILL BROKEN after three attempts**
+### 1. ~~"Back to lobby" does not work~~ — **FIXED, and confirmed by the operator**
 
-**Confirmed still broken by the operator on 2026-08-09**, after all three fixes
-below were deployed. Do not assume any of them worked. Reproduce it first.
+Confirmed working on 2026-08-13 in both environments. It took four attempts,
+and the first three were wrong in the same way, so what they got wrong is worth
+more than the fix.
 
-**Symptom.** In a running round the player sees the "Spectator Mode" panel with a
-**Back to lobby** button. Tapping it does not return to the lobby — the view
-stays in the game, and in at least one observation flipped to showing the
-player's own card and a BINGO button.
+**The cause was never the dismissal logic**, which all three earlier fixes
+aimed at and which was correct throughout. `App.tsx` picked the game to enter as
+the NEWEST `playing` game, with no reference to the user. Rounds run
+continuously, so a player in game A was pulled into game B the moment it
+started; the `players` lookup was scoped to whichever game that picked, found no
+row, set `playerId` to null, and `GameRoom` derives `isSpectator` from
+`!playerId`. The player was shown the Spectator panel for a round they were not
+in, having been taken out of the one they paid for. It also explains the
+observation nothing else did — flipping to their own card and a BINGO button —
+which is what happens when the newest running game happens to be theirs.
 
-**Three hypotheses, all deployed, none sufficient.** Listed so you do not spend
-the time again:
+**And the button being fixed was the wrong button.** Two of the four pull
+requests adjusted the exit in the spectator panel, which renders only while
+`status === 'playing'`. The reported screenshot was the GAME OVER modal, which
+is separate UI and had no button at all — its only exits were a countdown shown
+when the game carries `return_to_lobby_at`, and an invisible seven-second
+fallback when it does not.
 
-1. *"There is no exit at all."* — `GameRoom`'s only exit was automatic
-   (`onReturnToLobby` fires when the game **finishes**). Added a Back button for
-   spectators. Commit `cf8e9fd`. **Did not fix it.**
+What actually shipped, in order: prefer the game the user holds a card in
+(#131); withhold the spectator exit from players, who are re-entered by design
+and cannot use it (#132); restore the automatic game-end return that #132 broke
+by withholding the callback that also drives it (#133); and put a real button on
+the Game Over modal (#134).
 
-2. *"The auto-enter effect overrides the exit."* — `App.tsx` polls every 10s and,
-   for any `playing` game, does `setGameId(...)` + `setGameStarted(true)`
-   unconditionally, undoing the handler within seconds. Added a
-   `dismissedGameIdRef` so a deliberate exit is honoured — but **only for
-   somebody with no player row**, since a player should stay in the round they
-   paid for. Commit `00b4e00`. **Did not fix it**, because the operator testing
-   it *was* a player in that round.
+**The lesson, since this cost four attempts.** Every wrong fix came from
+reasoning about code structure instead of establishing which control the user
+had actually pressed — a question the original report answered in its first
+sentence. The screenshots settled it. Ask what was on screen before deciding
+what is broken.
 
-3. *"A player should never be offered Watch in the first place."* — the banner was
-   shown whenever a round was `playing`, including to somebody already holding a
-   card; and `handleSpectateGame` sets `gameId` but **not** `playerId`, so a
-   player tapping Watch renders as a fake spectator. Hid the banner via
-   `isAlreadyInThisGame` in `Lobby.tsx`. Commit `bf4fa1d`. **Did not fix it.**
-
-**What is therefore still unexplained.** With (3) deployed, a player should never
-reach the spectator panel at all — yet the panel is still being seen.
-
-### Fourth hypothesis, added 2026-08-10 — and it is structural
-
-Of the four possibilities listed here previously, three can now be ruled out by
-reading, and the one that survives is the one marked unchecked: **the panel is
-reached through the auto-enter effect, not the Watch button.** Not merely
-possible — unavoidable, at every round transition.
-
-`App.tsx:145` picks the game to enter like this:
-
-```js
-.from('games').select('id').eq('status', 'playing')
-.order('created_at', { ascending: false }).limit(1)
-```
-
-**The newest playing game. Never "the game this user is in."** The `players`
-lookup three lines later is then scoped to *that* game. So:
-
-1. A player is in game A. Game B is created and starts.
-2. The poll picks B, finds no `players` row for them in B, and does
-   `setPlayerId(null)` — for somebody who is genuinely playing, in A.
-3. It then does `setGameId(B)`, `setGameStarted(true)`, pulling them out of the
-   round they paid for and into one they are not in.
-4. `GameRoom` renders `isSpectator` from `!playerId || !currentPlayer`, so they
-   get the Spectator Mode panel.
-
-That alone explains the symptom without the dismissal logic being wrong at all.
-It also explains the observation nothing else did — *"flipped to showing the
-player's own card and a BINGO button"* — because when the newest playing game
-happens to be theirs, `playerId` populates and the card renders.
-
-**And it explains why Back appears dead.** The dismissal is scoped to one game
-id, so tapping Back works until the next game starts, at which point
-`dismissedGameIdRef.current` no longer equals `activeGameId` and the effect
-force-enters again. In a lobby that starts rounds continuously, that is
-indistinguishable from the button doing nothing.
-
-Ruled out while establishing this, so nobody re-checks them:
-
-- **`maybeSingle()` returning null on duplicates** — `players` carries
-  `UNIQUE (game_id, telegram_user_id)`, so there cannot be two rows to trip on.
-- **Hypothesis 3 not actually deployed** — `Lobby.tsx:1023` does gate the banner
-  on `!isAlreadyInThisGame`. It works, and it is irrelevant: the panel is not
-  reached through that banner.
-- **Concurrent `playing` games being impossible** — `db/20-post/002` says the
-  opposite in its own comment, having been written to survive "two concurrent
-  games".
-
-Still unchecked, and cheap to eliminate first: **the deployed bundle was not the
-one tested.** The Mini App caches aggressively and the entry hash changes on each
-build.
-
-**The fix is the one the design question below already names**, and it is small:
-prefer the game the user has a `players` row in, and fall back to "newest
-playing" only for somebody with no row anywhere — for whom entry should be
-explicit rather than automatic.
-
-> **Do not ship it blind.** Three fixes have already gone straight to the busiest
-> player path, in the environment players use, because there is nowhere else to
-> put them. **This one waits for the cutover** — `prod` serving the domain and
-> `dev` rebuildable on demand (`CUTOVER.md`, `scripts/seed-dev.sh`) is exactly
-> what makes a fourth attempt testable instead of a fourth guess.
-
-**How I would approach it next, in this order:**
-
-1. **Reproduce with the console open**, and log `playerId`, `currentPlayer`,
-   `isSpectator`, `dismissedGameIdRef.current` and `activeGameId` on every render
-   and every poll. Every hypothesis above is distinguishable from those five
-   values, and none of them can be settled by reading the code — I tried three
-   times and was wrong three times.
-2. Establish **how the panel is being reached**: the Watch button, or the
-   auto-enter effect. They are different bugs.
-3. Only then change code.
-
-**The deeper design question**, worth settling before patching further: `App.tsx`
-force-enters *everyone* into a running game on a 10-second poll. That is right
-for a player with a card and wrong for everyone else, and every attempt above is
-working around it rather than fixing it. Consider making entry explicit — a
-player is entered because they joined, not because a poll noticed a game — and
-the button follows naturally.
-
-**Files:** `src/App.tsx` (auto-enter effect ~line 122, `handleReturnToLobby`,
-`handleSpectateGame`), `src/components/Lobby.tsx` (watch banner,
-`isAlreadyInThisGame`), `src/components/GameRoom.tsx` (`isSpectator`, the
-spectator panel and its Back button).
 
 ### 2. Two `settings` rows still hold inherited values — **operator action**
 
