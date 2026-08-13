@@ -11,9 +11,29 @@ interface GameRoomProps {
   gameId: string;
   playerId: string | null;
   onReturnToLobby?: () => void;
+  /**
+   * Whether to offer the MANUAL exit. Separate from onReturnToLobby, and that
+   * separation is the whole point.
+   *
+   * onReturnToLobby does two unrelated jobs: it backs the spectator's button,
+   * and it is what returns EVERYBODY to the lobby automatically when a game
+   * finishes. Withholding the callback to hide the button therefore also
+   * removed the automatic return -- so a player who reached "Game Over" was
+   * stranded there with no way out. Shipped in #132 and found in dev within a
+   * day.
+   *
+   * The callback is now always supplied. This decides only whether a button is
+   * drawn.
+   */
+  canExitEarly?: boolean;
 }
 
-export function GameRoom({ gameId, playerId, onReturnToLobby }: GameRoomProps) {
+export function GameRoom({
+  gameId,
+  playerId,
+  onReturnToLobby,
+  canExitEarly = true,
+}: GameRoomProps) {
   const [game, setGame] = useState<Game | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [currentPlayer, setCurrentPlayer] = useState<Player | null>(null);
@@ -464,7 +484,7 @@ export function GameRoom({ gameId, playerId, onReturnToLobby }: GameRoomProps) {
                   abandon a card they have already been charged for, and
                   `/deselect-card` exists precisely because that has to be a
                   deliberate action with a refund attached, not a back button. */}
-              {onReturnToLobby && (
+              {onReturnToLobby && canExitEarly && (
                 <button
                   onClick={onReturnToLobby}
                   className={`mt-3 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${

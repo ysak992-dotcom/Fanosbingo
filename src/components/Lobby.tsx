@@ -668,6 +668,27 @@ export function Lobby({ onJoinGame, onSpectateGame, telegramUser }: LobbyProps) 
 
       if (errorMessage.includes('SELECTION_CLOSED') || errorMessage.includes('Selection window has closed')) {
         addToast('Selection window has closed. Game is starting!', 'error');
+      } else if (errorMessage.includes('unique_telegram_user_per_game')) {
+        // YOU ALREADY HAVE A CARD -- a different failure wearing the same word.
+        //
+        // This fell into the branch below, because both violations contain
+        // "duplicate", and the player was told somebody else had taken the card.
+        // Every card they tried next said the same thing, so the game looked
+        // broken rather than the message being wrong. Reported from dev as
+        // "when i pick one number i can not pick additional number".
+        //
+        // The two constraints are distinguishable by name, checked against the
+        // database rather than assumed:
+        //
+        //   unique_telegram_user_per_game        UNIQUE (game_id, telegram_user_id)
+        //   players_game_id_selected_number_key  UNIQUE (game_id, selected_number)
+        //
+        // Reaching here at all means the swap path above did not run -- it
+        // deselects the old card first -- which happens when `players` has not
+        // yet caught up with a selection this player just made. So refresh
+        // rather than only apologising: the next tap should then swap cleanly.
+        addToast('You already have a card in this round. Refreshing…', 'info');
+        void loadLobbyDataOptimized();
       } else if (errorMessage.includes('duplicate') || errorMessage.includes('already been taken') || errorMessage.includes('CARD_TAKEN')) {
         addToast('That card was just taken! Please choose another.', 'info');
       } else if (errorMessage.includes('balance') || errorMessage.includes('INSUFFICIENT_BALANCE')) {

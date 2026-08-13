@@ -478,7 +478,13 @@ function AppContent({ walletUser }: AppContentProps) {
     return (
       <>
         {/*
-          NO EXIT FOR A PLAYER, because there is not one.
+          NO MANUAL EXIT FOR A PLAYER, but the callback is ALWAYS passed.
+
+          Passing `undefined` here to hide the button also removed the automatic
+          return that fires when a game FINISHES -- the same prop backs both --
+          so a player who reached "Game Over" was stranded with no way out.
+          That regression shipped in #132 and was found in dev the next day.
+          canExitEarly hides the button and leaves the automatic path alone.
 
           This effect re-enters a player on every poll -- deliberately: they paid
           for a card, the claim is manual, and leaving the round is how somebody
@@ -497,7 +503,8 @@ function AppContent({ walletUser }: AppContentProps) {
         <GameRoom
           gameId={gameId}
           playerId={playerId}
-          onReturnToLobby={holdsCardInGame ? undefined : handleReturnToLobby}
+          onReturnToLobby={handleReturnToLobby}
+          canExitEarly={!holdsCardInGame}
         />
         {appUser && (
           <BankDepositModal
