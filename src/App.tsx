@@ -51,6 +51,17 @@ function AppContent({ walletUser }: AppContentProps) {
   // this only ever suppresses the automatic entry it was written for.
   const leftVoluntarilyRef = useRef(false);
 
+  // Whether the viewer holds a card in the game currently on screen.
+  //
+  // SEPARATE FROM playerId BEING NULL, which conflates "is not a player" with
+  // "their row has not loaded yet". GameRoom derives isSpectator from
+  // `!playerId`, so during that gap a real player renders as a spectator -- which
+  // is what put the Back button in front of somebody who could not use it.
+  //
+  // The poll already answers this properly, by looking for a players row. Keep
+  // the answer rather than re-deriving it from a value that means two things.
+  const [holdsCardInGame, setHoldsCardInGame] = useState(false);
+
   const [gameId, setGameId] = useState<string | null>(() => localStorage.getItem('gameId'));
   const [playerId, setPlayerId] = useState<string | null>(() => localStorage.getItem('playerId'));
   const [gameStarted, setGameStarted] = useState(false);
@@ -212,8 +223,10 @@ function AppContent({ walletUser }: AppContentProps) {
 
           isPlayerInThisGame = Boolean(playerRecord?.id);
           setPlayerId(playerRecord?.id || null);
+          setHoldsCardInGame(isPlayerInThisGame);
         } else {
           setPlayerId(null);
+          setHoldsCardInGame(false);
         }
 
         // DO NOT DRAG A SPECTATOR BACK IN.
@@ -464,7 +477,28 @@ function AppContent({ walletUser }: AppContentProps) {
   if (gameId && gameStarted) {
     return (
       <>
-        <GameRoom gameId={gameId} playerId={playerId} onReturnToLobby={handleReturnToLobby} />
+        {/*
+          NO EXIT FOR A PLAYER, because there is not one.
+
+          This effect re-enters a player on every poll -- deliberately: they paid
+          for a card, the claim is manual, and leaving the round is how somebody
+          loses a bingo they had won. So the button could never work for them,
+          and offering it was a promise the code refuses to keep. Tapping it
+          cleared the state, the next poll put it straight back, and the only
+          visible effect was the button itself disappearing.
+
+          A genuine spectator has nothing at stake and nothing to miss, so for
+          them it works and stays.
+
+          Withheld here rather than hidden inside GameRoom, because this is where
+          the answer is actually known. GameRoom only has playerId, which is null
+          both for a spectator and for a player whose row has not loaded.
+        */}
+        <GameRoom
+          gameId={gameId}
+          playerId={playerId}
+          onReturnToLobby={holdsCardInGame ? undefined : handleReturnToLobby}
+        />
         {appUser && (
           <BankDepositModal
             isOpen={showDepositModal}
