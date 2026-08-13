@@ -130,13 +130,28 @@ jobs:
         run: |
           set -euo pipefail
           since=$(( ($(date +%s) - 900) ))
+
+          # LOOKED UP, NOT CONSTRUCTED. The first version passed
+          # "fanosbingo-<env>-app" as the AutoScalingGroupName, and Terraform
+          # appends a generated suffix -- the real name is
+          # fanosbingo-prod-app-34a22636172d595bf89ca384dd. CloudWatch does not
+          # error on a dimension that matches nothing; it returns an empty set.
+          # So the step printed nothing, exited zero, and the comparison that
+          # made the whole 400-VU result interpretable was silently absent from
+          # the first run.
+          ASG="$(aws autoscaling describe-auto-scaling-groups \
+            --query "AutoScalingGroups[?starts_with(AutoScalingGroupName, 'fanosbingo-${ENVIRONMENT}-app')].AutoScalingGroupName | [0]" \
+            --output text)"
+          [ -n "$ASG" ] && [ "$ASG" != "None" ] \
+            || { echo "::warning::No autoscaling group matching fanosbingo-${ENVIRONMENT}-app; origin CPU will be unavailable."; ASG="none"; }
+          echo "origin ASG: ${ASG}"
           {
             echo ""
             echo "### Origin during the run"
             echo ""
             echo '```'
             aws cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name CPUUtilization \
-              --dimensions Name=AutoScalingGroupName,Value="fanosbingo-${ENVIRONMENT}-app" \
+              --dimensions Name=AutoScalingGroupName,Value="$ASG" \
               --start-time "$(date -u -d @${since} +%FT%TZ)" --end-time "$(date -u +%FT%TZ)" \
               --period 60 --statistics Maximum \
               --query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Maximum]' --output text \
