@@ -503,7 +503,7 @@ Target ≤$30/mo. Four choices get there:
 | **No AWS WAF** — Cloudflare free plan | ~$13/mo | Coarser rules |
 | **No NAT Gateway / VPC endpoints** | ~$61/mo | Instance in a public subnet, ingress locked to Cloudflare |
 
-Net: **single instance, single AZ.** ~3–5 min MTTR on instance failure (ASG
+Net: **single instance, single AZ.** 194s measured MTTR on instance failure (ASG
 replaces); on database failure, **8–11 minutes to a restored instance**, measured
 (see below). Deliberate at this budget.
 
@@ -1569,7 +1569,7 @@ replica.
   tagged `Environment=dev`, and PRs only ever plan dev, so prod secrets are
   unreachable. Dev holds BSC **testnet** credentials by construction; nothing
   there should ever touch mainnet funds.
-- **Single instance / single AZ** (§2). ~3–5 min MTTR on instance failure
+- **Single instance / single AZ** (§2). 194s measured MTTR on instance failure
 - `telegram_bot_token` exists in SSM *and* is read by app code; Phase 4 should
   make SSM the only source
 - The anonymous-access probe reports **"inconclusive"** on empty tables — it

@@ -148,6 +148,42 @@ that does not exist, in a change whose `npm run build` passed.
 
 ---
 
+## What is repeatable, and what is not
+
+Everything routine is a workflow. Two things deliberately are not, and the
+distinction matters more than the list.
+
+| | how | when |
+|---|---|---|
+| deploy a service | `deploy-services.yml` | on demand |
+| infrastructure | `terraform.yml` | PR plans, dispatch applies |
+| schema | `db-migrate.yml` | dry run, then real |
+| secrets into SSM | `sync-secrets.yml` | after an apply creates the KMS key |
+| **backup** | `db-backup.yml` | nightly 04:00 UTC, **prod** |
+| **restore drill** | `db-restore-drill.yml` | monthly, into a temporary instance |
+| **controls audit** | `verify.yml` | weekly Monday, **prod** |
+| **credit runway** | `free-tier-runway.yml` | daily 05:00 UTC, **prod** |
+| **load test** | `load-test.yml` | on demand, never scheduled |
+| **recovery drill** | `recovery-drill.yml` | on demand, never scheduled |
+| OS image pin | `ami-bump.yml` | weekly, by pull request |
+
+**The two drills are deliberately NOT scheduled.** Load and instance
+termination are things you choose to apply while watching. A nightly load test
+against production is a nightly outage waiting for the night it finds a limit,
+and an unattended recovery drill is an unattended outage.
+
+**Restoring over a LIVE database is deliberately not a workflow.** It destroys
+data, and one click is the wrong interface for that. `db-restore-drill.yml`
+automates the safe half -- restore into a temporary instance and count the rows.
+The live version is in RESTORE.md, has been done once, and should stay a
+deliberate act.
+
+Three scripts are run by hand and should stay that way: `seed-dev.sh` (refuses
+to run against prod), `seed-bank-options.sh` (prompts, so real account numbers
+never reach shell history) and `register-telegram-webhook.sh` (refuses if two
+environments share a bot token, because a bot has exactly one webhook and
+setWebhook REPLACES rather than rejects).
+
 ## How to change things
 
 Everything reaches AWS through **one path**: `.github/workflows/terraform.yml`,
@@ -335,26 +371,55 @@ nothing.
 > silently ignored while a comment claimed the operator could change the link
 > without a deploy.
 
-### 2. Promote `npm run typecheck` to a CI gate
+### 2. ~~Promote `npm run typecheck` to a CI gate~~ — **done 2026-08-13**
 
-It just caught a runtime crash on the busiest code path while `npm run build`
-passed. 11 findings remain, all `TS6133` unused declarations. Read each — one of
-them found dead spectator plumbing that turned out to be a real feature gap —
-then make the job blocking.
+Blocking, and main is clean. All eleven findings were read first, which was the
+condition the advisory comment set: nine were dead declarations, one was a
+seven-day revenue panel computed and never rendered, and one was a missing
+loading indicator kept as a comment because the submit button is guarded by
+different state.
 
-### 3. Nothing lints the SPA in CI
+### 3. ~~Nothing lints the SPA in CI~~ — **done 2026-08-13**
 
-`npm run lint` exists; no workflow runs it. Same gap that was already fixed for
-`scripts/`. One pre-existing error (`recentActivity` in `Admin.tsx`).
+Blocking on errors. `@typescript-eslint/no-explicit-any` is a WARNING and
+`supabase/functions` is excluded -- both deliberate, both explained in
+`eslint.config.js`. It found an empty destructuring pattern within a day.
 
-### 4. Zero capacity data
+### 4. ~~Zero capacity data~~ — **measured 2026-08-13**
 
-`stress-test/k6-spike-test.js` targets 400 concurrent and **has never run**; the
-`k6` npm entry is an autocomplete stub, so `npm run stress:*` cannot work as
-written. You do not know what breaks first: the pool is `max: 5` on a
-`t4g.small` shared with four other containers.
+From a GitHub runner. A laptop cannot generate this much load: the first attempt
+failed at 400 VUs with the origin idle at 25% CPU, because the client ran out of
+sockets, and it looked exactly like a server falling over.
 
-Load-testing means load-testing **production**. Do it small and off-peak.
+```
+prod, 200 concurrent      764 req/s    0.01% failed
+lobby RPC   median  91ms   p95 245ms
+edge only   median  76ms   p95 107ms
+EC2 CPU peak 78%          RDS connections flat at 20 of ~112
+```
+
+**CPU is the constraint, at roughly 78% for 200 concurrent users. The pool sizes
+never were** -- 764 requests a second went through 20 connections against a
+ceiling of about 112.
+
+Repeatable: `gh workflow run load-test.yml -f environment=<env> -f peak=200`.
+Run it against **dev** first; it is the same instance type and the same
+configuration.
+
+### 4b. Recovery, restore and the blanket grant — also closed
+
+- **MTTR is measured, not estimated.** Terminating the instance: prod recovers in
+  **194s**, dev in 99s, with the Elastic IP re-attached by `user_data` so
+  Cloudflare needs no DNS change. That re-association is the single point the
+  whole no-ALB design rests on and had never been exercised.
+  `gh workflow run recovery-drill.yml -f environment=<env> -f confirm=<env>`.
+- **A backup has been restored over a live database**, not just into a
+  throwaway -- 190s, data visibly rolled back, whole stack answering afterwards.
+  See RESTORE.md, whose "errors you should expect" section was wrong and is now
+  right.
+- **The blanket table grant is closed.** It existed only for `db/20-post/012` to
+  revoke, and the gap between them was a window -- the whole duration of a
+  migration run -- in which every table was client-writable.
 
 ### 5. Deferred on cost, by the operator's decision
 

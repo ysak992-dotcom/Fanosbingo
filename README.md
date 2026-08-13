@@ -127,7 +127,7 @@ filed, and the operator pays it from the admin queue — which exercises
 | 3 | **Amharic labels on money actions** | `DEPOSIT (ገቢ)` / `WITHDRAW (ወጪ)`. Deliberately **not** done by me — getting a money verb subtly wrong in a language you do not speak is worse than leaving it in English. Ask the operator for exact wording |
 | 4 | **Prod's first apply** | After 1. Requires the `prod` GitHub Environment reviewers (already configured) and `PROD_APPLY_ENABLED` (deliberately unset) |
 | 5 | ~~**Telegram bot webhook**~~ | **Closed 2026-08-08.** `/start` and `/help` answer with a `web_app` button. Secret token checked strictly; registration is `scripts/register-telegram-webhook.sh`, run *after* deploy |
-| 6 | **Root-cause the blanket table grant** | `db/20-post/001_rds_deltas.sql:121` grants `authenticated` write on every table. `012` neutralises it for all current and future tables, but the grant itself remains. Removing it has a regression surface of the whole schema |
+| 6 | ~~**Root-cause the blanket table grant**~~ | **Closed 2026-08-13.** The grant existed only for `012` to revoke, and the gap between them was a window — the whole duration of a migration run, 190s on prod — in which every table was client-writable. Both `db/00-bootstrap/001` and `db/20-post/001` now grant `SELECT`, the end state the system already had. `012` keeps its revoke as a no-op safety net and its probe as the regression test |
 | 7 | ~~**Admin auth is single-factor**~~ | **Closed 2026-08-08.** TOTP on the *action* — approving a deposit and completing a withdrawal require a code; reads and settings do not. Not enforced until the operator enrols, so it cannot lock the queue on deploy. `decided_by` on every approval remains the audit trail |
 | 8 | **Reinstate `unhealthy_status 5xx`** in the Caddyfile, and the crypto path | Both are explicitly Stage-2 items. See the Caddyfile comments and `src/lib/features.ts` |
 
@@ -366,12 +366,16 @@ Security**.
 mainnet values and a funded wallet. Run the restore drill against prod once —
 dev's 8–11 minute figure is not prod's.
 
-**Known and not accepted:** no capacity data at all (the spike test has never run,
-and `k6` is not installed — the npm entry is an autocomplete stub); the Cloudflare
+**Measured, not assumed** (2026-08-13): prod serves **764 req/s at 200 concurrent
+users**, lobby p95 245ms, CPU peaking at 78% — and recovers from losing its
+instance in **194 seconds** with the Elastic IP re-attached, so Cloudflare needs
+no DNS change. Both are repeatable: `load-test.yml` and `recovery-drill.yml`.
+
+**Known and not accepted:** the Cloudflare
 rate-limit rule applies cleanly and **does not enforce**, so it is not a control
 until somebody reads the dashboard analytics.
 
-**Known and accepted:** single instance in a single AZ (~3–5 min MTTR); the SPA is
+**Known and accepted:** single instance in a single AZ (**194s measured MTTR** on prod, 99s on dev — `recovery-drill.yml`); the SPA is
 served from that instance, so a replacement blanks it for anyone who misses
 Cloudflare's cache.
 
