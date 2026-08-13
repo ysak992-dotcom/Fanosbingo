@@ -45,7 +45,6 @@
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",
     "eslint-plugin-react-refresh": "^0.4.11",
     "globals": "^15.9.0",
-    "k6": "^0.0.0",
     "postcss": "^8.4.35",
     "rollup-plugin-visualizer": "^6.0.5",
     "solc": "^0.8.36",

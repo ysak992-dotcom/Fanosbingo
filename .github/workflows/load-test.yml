@@ -1,0 +1,165 @@
+name: Load test
+
+# The first capacity data this system has ever had came from a laptop, and the
+# laptop was the bottleneck.
+#
+# Measured 2026-08-13 from a residential connection in Addis: 100 concurrent
+# users completed 15,854 requests with ZERO failures, lobby p95 516ms. Pushed to
+# 400, half the requests failed -- while the origin's CPU peaked at 25%, RDS
+# connections stayed flat at 20 of ~112, and Caddy logged 1,115 of the 57,026
+# requests k6 believed it sent. The failures were status 0, not 429: the client
+# ran out of sockets and the run looked exactly like a server falling over.
+#
+# So this runs from a GitHub runner instead. It has the bandwidth, and it drops
+# the ~250ms round trip that otherwise dominates every percentile -- at 100 VUs
+# the minimum response was 258ms, which was almost entirely distance.
+#
+# NOT ON A SCHEDULE, deliberately. Load is something you choose to apply, at a
+# time you have chosen, while watching. A nightly load test against production
+# is a nightly outage waiting for the night it finds a limit.
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to load. START WITH DEV.'
+        required: true
+        type: choice
+        options: [dev, prod]
+        default: dev
+      peak:
+        description: 'Peak concurrent virtual users'
+        required: true
+        type: choice
+        options: ['50', '100', '200', '400', '800']
+        default: '200'
+      hold:
+        description: 'How long to hold each step'
+        required: true
+        type: choice
+        options: ['20s', '30s', '1m', '2m']
+        default: '30s'
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  load:
+    name: Load ${{ github.event.inputs.environment }} to ${{ github.event.inputs.peak }} VUs
+    runs-on: ubuntu-latest
+
+    # Declared, so prod inherits its required reviewers. Generating four hundred
+    # concurrent users against the environment players use is not something a
+    # dispatch should be able to do unapproved -- and cloudflare-import.yml is
+    # the cautionary tale for taking an environment INPUT without declaring it,
+    # which silently resolved repository values instead.
+    environment: ${{ github.event.inputs.environment }}
+
+    concurrency:
+      group: load-test-${{ github.event.inputs.environment }}
+      cancel-in-progress: false
+
+    env:
+      ENVIRONMENT: ${{ github.event.inputs.environment }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Assume AWS role
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment }}-github-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+          role-session-name: load-test-${{ github.run_id }}
+
+      - name: Install k6
+        run: |
+          set -euo pipefail
+          V=v0.54.0
+          curl -sSL "https://github.com/grafana/k6/releases/download/${V}/k6-${V}-linux-amd64.tar.gz" -o /tmp/k6.tgz
+          tar xzf /tmp/k6.tgz -C /tmp
+          sudo install "/tmp/k6-${V}-linux-amd64/k6" /usr/local/bin/k6
+          k6 version
+
+      # THE ORIGIN COMES FROM THIS ENVIRONMENT'S SSM, never a shared variable.
+      # Terraform writes app/api_base_url from that root's own domain_name, so a
+      # test cannot end up loading one environment while reporting on the other.
+      - name: Resolve the target
+        run: |
+          set -euo pipefail
+          API="$(aws ssm get-parameter \
+            --name "/fanosbingo-${ENVIRONMENT}/app/api_base_url" \
+            --query 'Parameter.Value' --output text)"
+          case "$API" in
+            https://api.*) : ;;
+            *) echo "::error::api_base_url for ${ENVIRONMENT} is '${API}', which is not an https api host."; exit 1 ;;
+          esac
+          echo "BASE=$API" >> "$GITHUB_ENV"
+          echo "Loading ${ENVIRONMENT} at ${API}"
+
+      - name: Baseline before load
+        run: |
+          set -euo pipefail
+          code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${BASE}/healthz")"
+          [ "$code" = "200" ] || { echo "::error::${BASE}/healthz is ${code} before the test started. Refusing to load a system that is already unhealthy."; exit 1; }
+          echo "baseline healthz 200"
+
+      - name: Run
+        env:
+          KEY: ${{ vars.SPA_ANON_KEY }}
+          PEAK: ${{ github.event.inputs.peak }}
+          HOLD: ${{ github.event.inputs.hold }}
+        run: |
+          set -euo pipefail
+          [ -n "$KEY" ] || { echo "::error::SPA_ANON_KEY is not set."; exit 1; }
+          k6 run --no-color stress-test/k6-ramp.js
+
+      - name: Publish the summary
+        if: always()
+        run: |
+          [ -f summary.md ] && cat summary.md >> "$GITHUB_STEP_SUMMARY" || \
+            echo "k6 produced no summary — see the step log." >> "$GITHUB_STEP_SUMMARY"
+
+      # WHAT THE ORIGIN THOUGHT, not just what the client saw. The laptop run
+      # was only diagnosable because these were checked afterwards: 25% CPU and
+      # flat connections are what proved the failures were not the server.
+      - name: What the origin actually did
+        if: always()
+        run: |
+          set -euo pipefail
+          since=$(( ($(date +%s) - 900) ))
+          {
+            echo ""
+            echo "### Origin during the run"
+            echo ""
+            echo '```'
+            aws cloudwatch get-metric-statistics --namespace AWS/EC2 --metric-name CPUUtilization \
+              --dimensions Name=AutoScalingGroupName,Value="fanosbingo-${ENVIRONMENT}-app" \
+              --start-time "$(date -u -d @${since} +%FT%TZ)" --end-time "$(date -u +%FT%TZ)" \
+              --period 60 --statistics Maximum \
+              --query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Maximum]' --output text \
+              | sed 's/^/EC2 CPU %   /' || echo "EC2 CPU: unavailable"
+            aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name DatabaseConnections \
+              --dimensions Name=DBInstanceIdentifier,Value="fanosbingo-${ENVIRONMENT}-pg" \
+              --start-time "$(date -u -d @${since} +%FT%TZ)" --end-time "$(date -u +%FT%TZ)" \
+              --period 60 --statistics Maximum \
+              --query 'sort_by(Datapoints,&Timestamp)[].[Timestamp,Maximum]' --output text \
+              | sed 's/^/RDS conns   /' || echo "RDS connections: unavailable"
+            echo '```'
+            echo ""
+            echo "Flat CPU and flat connections alongside a non-zero failure rate mean the"
+            echo "requests never arrived. Look at the client and the edge before the origin."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Still healthy afterwards
+        if: always()
+        run: |
+          set -euo pipefail
+          sleep 15
+          h="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${BASE}/healthz")"
+          r="$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${BASE}/functions/v1/readyz")"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "After the run: healthz \`${h}\`, readyz \`${r}\`" >> "$GITHUB_STEP_SUMMARY"
+          [ "$h" = "200" ] && [ "$r" = "200" ] || { echo "::error::${ENVIRONMENT} did not recover: healthz ${h}, readyz ${r}"; exit 1; }
