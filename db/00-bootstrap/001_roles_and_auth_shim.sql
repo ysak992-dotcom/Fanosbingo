@@ -268,8 +268,105 @@ CREATE SCHEMA IF NOT EXISTS _realtime;
 --
 -- Ownership rather than a grant list, so Realtime's future migrations can also
 -- alter and drop what they created.
-ALTER SCHEMA _realtime OWNER TO app_service;
-GRANT ALL ON SCHEMA _realtime TO app_service;
+-- ---------------------------------------------------------------------------
+-- OWNERSHIP, AND A REPORT WHEN IT HAD DRIFTED
+--
+-- On 2026-08-14 the dev database had _realtime owned by `fanosadmin` with no
+-- ACL, and Realtime had been crash-looping on exactly the error described
+-- above. The schema still held its four tables, so it had worked once and the
+-- ownership was reverted afterwards -- almost certainly by a restore, which is
+-- the one operation this project performs regularly that rewrites ownership.
+--
+-- THE STATEMENTS BELOW WERE ALREADY CORRECT. They simply had not run since,
+-- because this directory is REPEATABLE -- re-applied when its CONTENT changes,
+-- not on every migration. A declaration that is right can therefore sit next to
+-- a database that is wrong indefinitely, and the only symptom is a container
+-- that fails on its NEXT restart, which may be weeks later.
+--
+-- SO THIS MEASURES FIRST, THEN REPAIRS, THEN SAYS WHAT IT REPAIRED.
+--
+-- An earlier version of this block asserted the ownership AFTER fixing it,
+-- which cannot fail by construction -- the repair guarantees the assertion. It
+-- passed both negative tests I wrote for it, which is how the mistake surfaced.
+-- A self-healing step that heals silently is the shape this repository keeps
+-- finding: something reports success while the thing it exists to catch was
+-- true and is now hidden.
+--
+-- The WARNING is the point. Migration output is read; a repair nobody is told
+-- about is a restore that quietly broke Realtime and a fix nobody knew was
+-- needed. Continuous detection is the deep health check in
+-- services/functions/src/upstreams.js -- the two are complementary.
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  v_owner  text;
+  v_tables text;
+  v_fixed  boolean := false;
+  v_fresh  boolean;
+BEGIN
+  SELECT pg_get_userbyid(nspowner) INTO v_owner
+    FROM pg_namespace WHERE nspname = '_realtime';
+
+  -- FRESH vs DRIFTED, and the difference decides whether this is worth a
+  -- warning. `CREATE SCHEMA` above runs as the migration role, so on a brand-new
+  -- database the schema is legitimately owned by it for the moment between
+  -- creation and the reassignment below. That is setup, not drift.
+  --
+  -- An EMPTY schema is the tell. Once Realtime has run it leaves
+  -- schema_migrations, tenants, extensions and feature_flags behind -- so wrong
+  -- ownership on a schema that HAS tables means it worked once and something
+  -- took the ownership away. Warning on a new environment's first migration
+  -- would be an alarm that cries wolf on every build.
+  SELECT NOT EXISTS (SELECT 1 FROM pg_tables WHERE schemaname = '_realtime')
+    INTO v_fresh;
+
+  SELECT string_agg(tablename, ', ' ORDER BY tablename) INTO v_tables
+    FROM pg_tables WHERE schemaname = '_realtime' AND tableowner <> 'app_service';
+
+  IF v_owner IS DISTINCT FROM 'app_service' AND NOT v_fresh THEN
+    RAISE WARNING
+      'CORRECTING DRIFT: schema _realtime was owned by % rather than app_service. Realtime connects as app_service and CREATEs its migration table inside it, so it crash-loops on "no schema has been selected to create in" at its next restart. A restore rewrites ownership; that is the usual cause.',
+      v_owner;
+    v_fixed := true;
+  END IF;
+
+  IF v_tables IS NOT NULL THEN
+    RAISE WARNING
+      'CORRECTING DRIFT: tables in _realtime not owned by app_service: %. Realtime''s migrator alters these on boot.',
+      v_tables;
+    v_fixed := true;
+  END IF;
+
+  -- The repair. Ownership rather than a grant list, so Realtime's future
+  -- migrations can also alter and drop what they created.
+  ALTER SCHEMA _realtime OWNER TO app_service;
+  GRANT ALL ON SCHEMA _realtime TO app_service;
+
+  DECLARE r record;
+  BEGIN
+    FOR r IN SELECT tablename FROM pg_tables WHERE schemaname = '_realtime' LOOP
+      EXECUTE format('ALTER TABLE _realtime.%I OWNER TO app_service', r.tablename);
+    END LOOP;
+    FOR r IN SELECT sequencename FROM pg_sequences WHERE schemaname = '_realtime' LOOP
+      EXECUTE format('ALTER SEQUENCE _realtime.%I OWNER TO app_service', r.sequencename);
+    END LOOP;
+  END;
+
+  -- Confirm the repair took. This CAN fail -- if the migration role cannot
+  -- reassign ownership, everything above is a no-op that reported success.
+  IF (SELECT pg_get_userbyid(nspowner) FROM pg_namespace WHERE nspname = '_realtime')
+       IS DISTINCT FROM 'app_service'
+     OR NOT has_schema_privilege('app_service', '_realtime', 'CREATE') THEN
+    RAISE EXCEPTION
+      'could not give app_service ownership of _realtime. Realtime cannot start without it.';
+  END IF;
+
+  IF v_fixed THEN
+    RAISE WARNING 'DRIFT CORRECTED: _realtime ownership restored. Check when this database was last restored, and whether Realtime has been failing since.';
+  ELSE
+    RAISE NOTICE '_realtime is owned by app_service, tables included';
+  END IF;
+END $$;
 
 -- Realtime consumes a logical replication slot, which requires the REPLICATION
 -- attribute. On RDS that is granted through the rds_replication role, which

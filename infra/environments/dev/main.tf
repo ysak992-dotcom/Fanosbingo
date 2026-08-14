@@ -395,14 +395,23 @@ module "monitoring" {
   # watches nothing. Sourced from iam rather than restated, so it cannot drift.
   metric_namespace = module.iam.metric_namespace
 
-  # OFF UNTIL THE CODE THEY WATCH IS DEPLOYED HERE. Same reasoning, and the same
-  # sequence, as the block in environments/prod/main.tf -- deploy first, confirm
-  # the endpoint answers and the metric exists, then flip both and apply.
+  # ON. Both preconditions were confirmed before flipping, not assumed:
   #
-  # dev is where that sequence should be rehearsed, since it deploys first and a
-  # permanently-red alarm here costs nothing but still demonstrates the ordering.
-  enable_deep_health_check   = false
-  enable_balance_drift_alarm = false
+  #   api.<domain>/functions/v1/readyz/deep answers 200 with
+  #     {"ready":true,"down":[],"checks":{database,postgrest,realtime all up}}
+  #   BalanceDriftAccounts has a datapoint: 0 at 2026-08-14T15:51 +03:00
+  #
+  # Both treat missing data as breaching, so turning either on before its signal
+  # existed would have produced an alarm that is red from creation -- which is
+  # how an alarm gets muted, and this module has the backup-alarm precedent.
+  #
+  # THE DEEP CHECK IS NOT THEORETICAL HERE. On 2026-08-14 the realtime container
+  # was crash-looping on this environment and NOTHING alarmed: rt.<domain>/healthz
+  # returned 200 throughout, because Caddy answers that path itself and never
+  # touches the upstream. It was found by hand, during an unrelated apply. This
+  # is the alarm that would have said so.
+  enable_deep_health_check   = true
+  enable_balance_drift_alarm = true
 
   # OFF for a THIRD reason, and a different one: these two watch metrics that
   # only exist once an instance has booted with the new user_data. That is a
