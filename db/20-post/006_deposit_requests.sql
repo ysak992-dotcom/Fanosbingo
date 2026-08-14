@@ -189,6 +189,10 @@ BEGIN
     RETURN jsonb_build_object('success', false, 'error_code', 'NOT_PENDING');
   END IF;
 
+  -- Names this movement in the balance ledger (db/20-post/019). Transaction-
+    -- local, so it cannot leak into the next statement on a pooled connection.
+  PERFORM set_config('app.ledger_reason', 'deposit_approval', true);
+
   UPDATE telegram_users
      SET deposited_balance = COALESCE(deposited_balance, 0) + p_actual_amount,
          total_deposited   = COALESCE(total_deposited, 0) + p_actual_amount

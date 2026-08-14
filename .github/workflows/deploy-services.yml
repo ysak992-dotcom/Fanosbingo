@@ -352,6 +352,42 @@ jobs:
           cache-to: type=gha,mode=max
           provenance: false
 
+      # SCAN THE IMAGE THAT WAS JUST PUSHED, BEFORE ANYTHING RUNS IT.
+      #
+      # Trivy already runs in terraform.yml, and it scans the REPOSITORY -- IaC
+      # misconfiguration and committed secrets. Nothing scanned the ARTEFACT.
+      # That is a different question with a different answer: the base image
+      # contributes an operating system, and `node:22-alpine` or
+      # `postgrest/postgrest:v12.2.3` picking up a critical CVE is invisible to
+      # every check in this repository, because nothing in this repository
+      # changed.
+      #
+      # AFTER the push and BEFORE the SSM pointer, on purpose. Scanning the
+      # pushed image scans exactly the bytes that will run -- not a local rebuild
+      # that might differ. Failing here leaves the image in ECR unreferenced,
+      # which is the harmless outcome: app_stack only creates a service for an
+      # image the pointer names, so a scan failure means the rollout simply does
+      # not happen.
+      #
+      # CRITICAL ONLY, and only where a fix exists. A base image typically
+      # carries a long tail of unfixable low and medium findings, and a gate that
+      # fires on those is one that gets bypassed within a fortnight. `critical`
+      # plus `--ignore-unfixed` is the threshold where the answer is always
+      # "rebuild on a newer base", which is an action somebody can actually take.
+      #
+      # Accepted findings go in .trivyignore with a justification, as the IaC
+      # scan's own findings already do.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ steps.ecr.outputs.repository }}:${{ github.sha }}
+          scan-type: image
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          trivyignores: .trivyignore
+          format: table
+
       # Recorded BEFORE the rollout, deliberately. If the rollout fails, the
       # pointer still reflects the build that was meant to be running, and a
       # subsequent `terraform apply` converges to it rather than to whatever was

@@ -181,3 +181,46 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "real_money" {
+  description = <<-EOT
+    Whether this environment holds real player money.
+
+    NOT a cosmetic label. It is the switch the durability settings are checked
+    against: with it true, an apply FAILS unless backup retention, Multi-AZ,
+    deletion protection and the final snapshot are all set to what a ledger of
+    real balances requires. See the precondition in main.tf.
+
+    WHY IT EXISTS. environments/prod/main.tf carried a comment reading "ONE, AND
+    IT MUST BECOME 7 BEFORE THE FIRST REAL DEPOSIT", and the same file gated
+    multi_az and the instance count on the same promise. Three settings, one
+    remembered intention, enforced by nobody -- and the trigger was named as an
+    EVENT ("the first real deposit"), which is exactly the kind of thing that
+    happens on a Tuesday without anyone rereading a Terraform comment.
+
+    This turns the promise into a variable. It cannot make anyone flip it before
+    taking a deposit; it makes flipping it impossible to do HALFWAY, which is
+    the failure that would actually cost money -- believing prod is durable
+    because somebody changed one of the three.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "accept_single_az_risk" {
+  description = <<-EOT
+    Acknowledge running a real-money database in ONE availability zone.
+
+    Only consulted when real_money is true. Multi-AZ roughly doubles the RDS
+    instance cost, which is a real constraint on this budget -- so it is not
+    forced. What is forced is that somebody chose it: without this, real_money
+    and multi_az = false is indistinguishable from an oversight.
+
+    Setting it true accepts: an AZ failure takes the ledger offline until a
+    manual restore. The nightly pg_dump to S3 under Object Lock bounds how much
+    is LOST; nothing bounds how long it is DOWN. Revisit when the customer base
+    justifies the second instance.
+  EOT
+  type        = bool
+  default     = false
+}

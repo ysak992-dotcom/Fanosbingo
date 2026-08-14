@@ -67,6 +67,42 @@ RUN apk add --no-cache dumb-init
 COPY docker/rds-global-bundle.pem /opt/rds-global-bundle.pem
 ENV PGSSLROOTCERT=/opt/rds-global-bundle.pem
 
+# NO PACKAGE MANAGER IN THE RUNTIME IMAGE.
+#
+# node:22-alpine bundles npm, and npm bundles its own copy of tar. On
+# 2026-08-14 that copy is 7.5.11, carrying CVE-2026-59873 (CRITICAL, fixed in
+# 7.5.19) -- a denial of service through a crafted gzip bomb during extraction.
+# Found by pointing the deploy workflow's new image scan at this base, which is
+# the whole reason that scan exists: nothing in this repository changed, and
+# nothing in this repository could have noticed.
+#
+# SUPPRESSING IT IN .trivyignore WAS THE OBVIOUS MOVE AND IS THE WRONG ONE. The
+# finding is real; what makes it harmless here is that nothing at runtime
+# extracts a tarball, because nothing at runtime runs npm. The CMD is
+# `node src/index.js`. So the honest fix is to make that true structurally
+# rather than to assert it in an ignore file that nobody rereads.
+#
+# Deleting npm also removes a package manager from a container that terminates
+# requests from the internet, which is worth doing on its own -- an attacker who
+# reaches code execution here no longer has an installer waiting for them.
+#
+# Dependencies are already present: they are COPIED from the deps stage above,
+# which is where npm ci runs. Nothing below this line needs npm to exist.
+# yarn and corepack go too. They carry no CRITICAL finding today, but leaving
+# them would make the heading above false, and a comment that overstates what the
+# code does is the failure mode this repository keeps finding.
+RUN rm -rf /usr/local/lib/node_modules/npm \
+           /usr/local/lib/node_modules/corepack \
+           /usr/local/bin/npm \
+           /usr/local/bin/npx \
+           /usr/local/bin/corepack \
+           /usr/local/bin/yarn \
+           /usr/local/bin/yarnpkg \
+           /opt/yarn-v* \
+ && ! command -v npm \
+ && ! command -v yarn \
+ && ! command -v corepack
+
 ENV NODE_ENV=production
 WORKDIR /app
 

@@ -31,6 +31,106 @@
   # REPEATABLE migration: idempotent, re-applied whenever it changes.
 */
 
+-- ---------------------------------------------------------------------------
+-- secure_random_int(n) -> a uniform integer in [1, n], from a CSPRNG
+--
+-- WHY NOT random(), WHICH IS WHAT THIS REPLACES
+--
+-- PostgreSQL's random() is a fast non-cryptographic PRNG (xoshiro256** in 15+),
+-- seeded per session and advanced deterministically. It is the right function
+-- for sampling a table and the wrong one for deciding who wins money:
+--
+--   * Its state is recoverable from its output. An observer who sees enough
+--     draws can compute the sequence, and in this game every draw is PUBLISHED
+--     -- `called_numbers` is readable by anon, because the board has to render.
+--     So the observations are handed out for free.
+--   * setseed() makes it reproducible on purpose. Anything able to call it on
+--     the ticker's session fixes the whole game's outcome, and it is not a
+--     privileged function.
+--   * It is not auditable as fair. "We used the default PRNG" is not an answer
+--     to a player asking whether a draw was rigged, and it is not an answer a
+--     gaming regulator accepts either.
+--
+-- None of that is a live exploit today -- reaching either weakness needs the
+-- ticker's own database session, which is the same access that could simply
+-- UPDATE called_numbers. It is here because a real-money draw should not rest
+-- on a generator whose documentation says it is unsuitable for the purpose.
+--
+-- gen_random_bytes() is pgcrypto, enabled in db/00-bootstrap/001 (which notes
+-- that gen_random_BYTES is pgcrypto-only, unlike gen_random_UUID).
+--
+-- WHY REJECTION SAMPLING RATHER THAN A MODULO
+--
+-- `r % n` is biased whenever n does not divide the generator's range: the first
+-- (range mod n) values become fractionally likelier. At n = 75 over 2^32 the
+-- bias is about 1 part in 57 million, which is nothing -- and "the bias is
+-- small" is exactly the sentence an auditor should not have to accept. Drawing
+-- again on the rare out-of-range value removes it entirely, at a cost of one
+-- extra draw roughly once every 57 million calls.
+--
+-- The loop is bounded anyway. Not because 100 consecutive rejections is
+-- plausible -- it has probability below 10^-800 -- but because an unbounded
+-- loop inside the game's heartbeat is not something to leave to arithmetic.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION secure_random_int(p_upper integer)
+RETURNS integer
+LANGUAGE plpgsql
+VOLATILE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  -- 2^32. The draw below builds a 32-bit value from four bytes.
+  c_range  constant bigint := 4294967296;
+  v_bytes  bytea;
+  v_draw   bigint;
+  v_limit  bigint;
+  v_tries  integer := 0;
+BEGIN
+  IF p_upper IS NULL OR p_upper < 1 THEN
+    RAISE EXCEPTION 'secure_random_int requires an upper bound of at least 1, got %', p_upper;
+  END IF;
+
+  -- The largest multiple of p_upper that fits in the range. Draws at or above
+  -- it are the ones that would skew a modulo, so they are discarded.
+  v_limit := (c_range / p_upper) * p_upper;
+
+  LOOP
+    v_tries := v_tries + 1;
+
+    -- Assembled with get_byte rather than a bit-string cast, so the value is
+    -- unambiguously unsigned. ('x'||hex)::bit(32)::int would sign-extend, and a
+    -- negative draw here would index off the front of the array.
+    v_bytes := gen_random_bytes(4);
+    v_draw  := (get_byte(v_bytes, 0)::bigint << 24)
+             | (get_byte(v_bytes, 1)::bigint << 16)
+             | (get_byte(v_bytes, 2)::bigint <<  8)
+             |  get_byte(v_bytes, 3)::bigint;
+
+    EXIT WHEN v_draw < v_limit;
+
+    IF v_tries >= 100 THEN
+      -- Unreachable in practice. Taking the modulo anyway is better than
+      -- looping forever inside the tick, and the bias it reintroduces is the
+      -- one this function was already an improvement on.
+      EXIT;
+    END IF;
+  END LOOP;
+
+  RETURN (v_draw % p_upper)::integer + 1;
+END;
+$$;
+
+COMMENT ON FUNCTION secure_random_int(integer) IS
+  'Uniform integer in [1, n] from pgcrypto''s CSPRNG, by rejection sampling. The bingo draw uses this rather than random(), whose state is recoverable from the outputs this game publishes.';
+
+-- Same reasoning as game_tick below: a player who can call the draw directly
+-- learns nothing useful, but there is no reason for this to be reachable over
+-- HTTP, and db/20-post/004's allowlist would revoke it on the next apply
+-- regardless. Stating it here keeps the two files from disagreeing in between.
+REVOKE ALL ON FUNCTION secure_random_int(integer) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION secure_random_int(integer) TO service_role;
+
 CREATE OR REPLACE FUNCTION game_tick(
   p_call_interval_ms   integer DEFAULT 3500,
   p_claim_window_ms    integer DEFAULT 1000,
@@ -129,7 +229,8 @@ BEGIN
       CONTINUE;
     END IF;
 
-    v_new_number := v_remaining[1 + floor(random() * array_length(v_remaining, 1))::int];
+    -- The draw. See secure_random_int() below for why this is not random().
+    v_new_number := v_remaining[secure_random_int(array_length(v_remaining, 1))];
 
     UPDATE games
     SET current_number = v_new_number,
@@ -241,11 +342,25 @@ BEGIN
 END;
 $$;
 
-COMMENT ON FUNCTION game_tick IS
+COMMENT ON FUNCTION game_tick(integer, integer, integer, integer, integer) IS
   'Server-authoritative game loop, called once per second by the ticker container while it holds the advisory lock. Replaces the browser-driven state machine and the unschedulable 4-second pg_cron job.';
 
 -- Only privileged server-side code may drive the game. Explicitly revoked from
 -- anon and authenticated: a player being able to call the next number early
 -- would be a straightforward way to cheat.
-REVOKE ALL ON FUNCTION game_tick FROM PUBLIC, anon, authenticated;
-GRANT EXECUTE ON FUNCTION game_tick TO service_role;
+--
+-- ARGUMENT TYPES NAMED, not the bare name. `ON FUNCTION game_tick` resolves only
+-- while exactly one signature exists, and fails the whole migration the moment a
+-- second one does:
+--
+--   ERROR: function name "game_tick" is not unique
+--
+-- scripts/check-migrations.mjs exists because that has happened three times
+-- here, and its header records that a failing GRANT is how the first one was
+-- found -- against the real database, after passing every local check. There is
+-- no reason to keep relying on uniqueness when stating the types costs nothing.
+-- Matches how 013, 015 and 016 already write theirs.
+REVOKE ALL ON FUNCTION game_tick(integer, integer, integer, integer, integer)
+  FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION game_tick(integer, integer, integer, integer, integer)
+  TO service_role;

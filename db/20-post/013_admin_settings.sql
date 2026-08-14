@@ -135,6 +135,98 @@ REVOKE EXECUTE ON FUNCTION admin_update_setting(text, text, uuid)
   FROM PUBLIC, anon, authenticated;
 GRANT EXECUTE ON FUNCTION admin_update_setting(text, text, uuid) TO service_role;
 
+-- ---------------------------------------------------------------------------
+-- commission_rate(): ONE reader, because there were two and they disagreed
+--
+-- THE BUG THIS CLOSES IS NOT THE DISAGREEMENT. IT IS WHAT BOTH DO WHEN THE ROW
+-- IS ABSENT.
+--
+-- Two functions computed winner_prize from this setting, each with its own
+-- fallback:
+--
+--   update_game_pot()      (AFTER INSERT ON players)   COALESCE(..., 20)
+--   refund_player_stake()  (BEFORE DELETE ON players)  COALESCE(..., 25)
+--
+-- So the pot's payout ratio depended on whether the last thing that happened
+-- was a join or a release. That alone is a bug: 10 ETB pays 8 after a join and
+-- 7.50 after somebody leaves.
+--
+-- The worse half is that NEITHER fallback fires when the row is MISSING.
+-- `SELECT COALESCE(value::integer, 20) INTO v FROM settings WHERE id = ...`
+-- puts the COALESCE inside the query, so with no matching row the query returns
+-- NO ROWS, PL/pgSQL assigns NULL to the target, and the COALESCE never runs.
+-- Measured on postgres:16 rather than reasoned about:
+--
+--   settings row absent -> commission_rate_val = NULL
+--                       -> FLOOR(pot * (100 - NULL) / 100) = NULL
+--
+-- refund_player_stake() catches that with a following IF; update_game_pot() has
+-- no such guard, so winner_prize is set to NULL. atomic_claim_bingo then pays
+-- FLOOR(COALESCE(winner_prize, 0) / n_winners) -- and EVERY WINNER IS PAID ZERO,
+-- silently, with the game recorded as finished and winners_paid set.
+--
+-- WHY THIS RAISES INSTEAD OF DEFAULTING.
+--
+-- A default would keep the game running on a house cut nobody chose, which is
+-- the "reports success and does the wrong thing" shape this repository keeps
+-- finding. The row is not an optional convenience: it is an invariant the
+-- migration below establishes and asserts, so its absence means a broken
+-- database, not a routine state. Refusing turns that into a failed join
+-- somebody investigates, instead of a payout that quietly rounds to nothing.
+--
+-- The bounds match admin_update_setting's, restated here because this is the
+-- reader: a value that got in by some other route than that function -- psql,
+-- a restore from an older dump -- must not be trusted just because it is stored.
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION commission_rate()
+RETURNS integer
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_raw  text;
+  v_rate integer;
+BEGIN
+  -- Two statements, not one, so "no row" and "row holding rubbish" are
+  -- distinguishable in the error. They need different fixes.
+  SELECT value INTO v_raw FROM settings WHERE id = 'commission_rate';
+
+  IF v_raw IS NULL THEN
+    RAISE EXCEPTION
+      'settings.commission_rate is missing. Pot arithmetic will not proceed on an assumed house cut -- every winner would be paid zero. Restore it with: SELECT admin_update_setting(''commission_rate'', ''20'', <admin_uuid>);'
+      USING ERRCODE = 'no_data_found';
+  END IF;
+
+  BEGIN
+    v_rate := btrim(v_raw)::integer;
+  EXCEPTION WHEN others THEN
+    RAISE EXCEPTION
+      'settings.commission_rate is %, which is not an integer.', quote_literal(v_raw)
+      USING ERRCODE = 'invalid_parameter_value';
+  END;
+
+  IF v_rate < 0 OR v_rate > 50 THEN
+    RAISE EXCEPTION
+      'settings.commission_rate is %, outside the 0-50 range admin_update_setting enforces.', v_rate
+      USING ERRCODE = 'invalid_parameter_value';
+  END IF;
+
+  RETURN v_rate;
+END;
+$$;
+
+COMMENT ON FUNCTION commission_rate() IS
+  'The house cut, as a percentage. The single reader of settings.commission_rate: update_game_pot() and refund_player_stake() both call this so a pot cannot be built at one rate and rebuilt at another. Raises rather than defaulting -- see db/20-post/013.';
+
+-- A new function is EXECUTE-able by PUBLIC by default, and db/20-post/004 ran
+-- long before this file. So the revoke is explicit, exactly as 015 and 016 do.
+-- Nothing client-side needs this: the SPA is shown winner_prize, not the rate
+-- that produced it.
+REVOKE EXECUTE ON FUNCTION commission_rate() FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION commission_rate() TO service_role;
+
 DO $$
 DECLARE
   v_writable text[] := ARRAY[

@@ -77,6 +77,11 @@ module "ecs" {
   # Pinned in ami.tf, bumped by pull request. See that file.
   ami_id = local.ecs_ami_id
 
+  # Where user_data's host-metrics timer publishes memory and disk usage. Taken
+  # from iam so it matches the namespace that role's PutMetricData condition
+  # allows and the namespace modules/monitoring alarms on.
+  metric_namespace = module.iam.metric_namespace
+
   # Stage 2 upgrade: set instance_count = 2 and add subnet index 1. The ticker's
   # advisory lock already guarantees a single game-loop caller across instances.
   instance_count = 1
@@ -134,6 +139,25 @@ module "rds" {
 
   # Stage 2 upgrade: multi_az = true (roughly doubles the instance cost).
   multi_az = false
+
+  # THE PROMISE ABOVE, MADE MECHANICAL.
+  #
+  # Everything in the backup_retention_period comment is still true, including
+  # that the trigger is the first real deposit rather than a date. What has
+  # changed is that the trigger is now a variable rather than an intention: set
+  # real_money = true and this apply FAILS until retention, Multi-AZ, deletion
+  # protection and the final snapshot are all correct together.
+  #
+  # It cannot make anyone flip it in time. It makes flipping it halfway
+  # impossible, which is the failure that would actually cost balances -- three
+  # settings gated on one remembered promise, with nothing checking.
+  real_money = var.real_money
+
+  # Multi-AZ is NOT forced by real_money, because it roughly doubles the RDS
+  # bill and a gate that demands real spending is one that gets routed around by
+  # never setting real_money at all. The cost decision stays with whoever pays;
+  # what the precondition insists on is that it was made rather than defaulted.
+  accept_single_az_risk = var.accept_single_az_risk
 }
 
 module "iam" {
@@ -353,6 +377,47 @@ module "monitoring" {
   # carry it -- and it must be here BEFORE dev is destroyed, not after, or the
   # account spends the gap with no warning that it is heading for suspension.
   enable_free_tier_alarm = true
+
+  # OFF FOR NOW, AND BOTH FLIP IN THE SAME APPLY -- the one AFTER the deploy that
+  # ships the code they watch.
+  #
+  # These are the two alarms that close the largest hole in this stack: until the
+  # deep check exists, postgrest, realtime and the functions service can each
+  # stop with no alarm anywhere, because the only external check is answered by
+  # Caddy itself and there are no ECS task-count alarms. And until the drift
+  # alarm exists, db/20-post/019's ledger is a table that grows rather than a
+  # control.
+  #
+  # They are off because both depend on containers that have not been built yet:
+  #
+  #   enable_deep_health_check     needs a functions image serving
+  #                                /readyz/deep (services/functions/src/upstreams.js)
+  #   enable_balance_drift_alarm   needs a ticker publishing BalanceDriftAccounts
+  #                                (services/ticker/src/index.js)
+  #
+  # Both treat missing data as breaching, deliberately, so turning either on
+  # before its metric exists produces an alarm that is red from creation and
+  # stays red -- which is how an alarm gets muted, and this module has the
+  # backup-alarm comment above as the precedent for taking that seriously.
+  #
+  # SEQUENCE: merge -> deploy-services -> confirm
+  #   curl -fsS https://api.<domain>/functions/v1/readyz/deep
+  #   aws cloudwatch get-metric-statistics --metric-name BalanceDriftAccounts ...
+  # -> set both to true -> apply.
+  enable_deep_health_check   = false
+  enable_balance_drift_alarm = false
+
+  # OFF for a THIRD reason, and a different one: these two watch metrics that
+  # only exist once an instance has booted with the new user_data. That is a
+  # LAUNCH TEMPLATE change, and modules/ecs is explicit that such a change does
+  # not take effect on apply -- the ASG references $Latest, so Terraform sees no
+  # diff on it and instance_refresh never fires. It needs a deliberate
+  # `aws autoscaling start-instance-refresh`, which is a ~194-second outage
+  # measured on prod on 2026-08-13. See AGENTS.md section 7.
+  #
+  # So: apply, then refresh the instance at a quiet moment, then confirm
+  # MemoryUsedPercent has a datapoint, then turn this on.
+  enable_host_metric_alarms = false
 
   # Must match the namespace the containers publish to, or the game-loop alarm
   # watches nothing. Sourced from iam rather than restated, so it cannot drift.

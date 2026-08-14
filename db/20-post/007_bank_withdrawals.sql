@@ -269,6 +269,10 @@ BEGIN
       USING ERRCODE = 'check_violation';
   END IF;
 
+  -- Names this movement in the balance ledger (db/20-post/019). This is the
+    -- entry that matters most: money has already left a real bank account.
+  PERFORM set_config('app.ledger_reason', 'withdrawal_payout', true);
+
   UPDATE telegram_users
      SET won_balance     = won_balance - v_row.amount,
          total_withdrawn = coalesce(total_withdrawn, 0) + v_row.amount

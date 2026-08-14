@@ -19,7 +19,7 @@
   # the second. Neither is available in a stock `postgres:16` service container,
   # so a full replay needs a custom image before it needs anything else.
   #
-  # This builds the objects `db/20-post/003` onwards actually touch, which is
+  # This builds the objects `db/20-post/001` onwards actually touch, which is
   # where every security decision in this repository lives. It is not a
   # substitute for the migration run against dev; it is the check that catches the
   # class of mistake that has actually happened here -- a migration that does not
@@ -27,7 +27,28 @@
   #
   # IF IT DRIFTS FROM PRODUCTION, THE JOB FAILS. That is the right direction: a
   # missing column here is a loud CI failure rather than a quiet gap in coverage.
+  #
+  # 001 AND 002 ARE NO LONGER SKIPPED. The paragraph above used to end by
+  # explaining that a full replay "needs a custom image before it needs anything
+  # else" -- and then the harness skipped the two files that needed one. That
+  # left game_tick(), which starts games, calls numbers, closes claim windows and
+  # fires the payout trigger, as the only money-moving code here with no
+  # automated coverage whatsoever. db/test/Dockerfile is the custom image; this
+  # file now builds what those two need as well.
 */
+
+-- ---------------------------------------------------------------------------
+-- Extensions, as db/00-bootstrap/001 creates them.
+--
+-- pg_cron is what db/20-post/001 unschedules the 4-second game loop from, and
+-- pgcrypto is what secure_random_int() draws bingo numbers from. Both must be
+-- present BEFORE the migrations run, and pg_cron additionally requires the
+-- server to have been STARTED with it in shared_preload_libraries -- which is
+-- why scripts/test-migrations.sh passes that as a server argument and why the
+-- stock image could not host this.
+-- ---------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS pg_cron;
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Roles, as db/00-bootstrap/001 creates them.
 CREATE ROLE anon NOLOGIN NOINHERIT;
@@ -67,6 +88,9 @@ CREATE TABLE telegram_users (
   total_deposited integer DEFAULT 0,
   total_spent integer DEFAULT 0,
   total_won integer DEFAULT 0,
+  -- 20251213155759. Written by payout_winners() on every win, so its absence
+  -- here made the payout path fail the moment the harness started executing it.
+  win_count integer DEFAULT 0,
   total_withdrawn numeric DEFAULT 0,
   referral_code text,
   total_referrals integer DEFAULT 0,
@@ -107,11 +131,28 @@ INSERT INTO settings (id, value) VALUES
   ('deposit_contract_address', ''),
   ('deposit_contract_chain_id', '97');
 
+-- total_pot and winner_prize carry DEFAULT 0 in production (20251110051255).
+-- They were bare here, so a game inserted without them started at NULL and the
+-- pot arithmetic in db/20-post/018 had nothing to add to -- the same class of
+-- fixture-laxer-than-production problem as the NOT NULLs on `players` below.
+-- The remaining columns are the ones game_tick() drives the state machine
+-- through: the claim window it closes, the call clock it advances, the
+-- selection cutoff it rolls, and the winner fields payout_winners() reads.
 CREATE TABLE games (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  game_number integer, status text, total_pot integer, stake_amount integer DEFAULT 10,
-  winner_prize integer, called_numbers integer[] DEFAULT '{}',
-  starts_at timestamptz DEFAULT now(), created_at timestamptz DEFAULT now()
+  game_number integer, status text, total_pot integer DEFAULT 0, stake_amount integer DEFAULT 10,
+  winner_prize integer DEFAULT 0, called_numbers integer[] DEFAULT '{}',
+  starts_at timestamptz DEFAULT now(), created_at timestamptz DEFAULT now(),
+  host_id text,
+  current_number integer,
+  last_number_called_at timestamptz,
+  selection_closed_at timestamptz,
+  claim_window_start timestamptz,
+  started_at timestamptz,
+  finished_at timestamptz,
+  winner_ids uuid[] DEFAULT '{}',
+  winner_prize_each integer DEFAULT 0,
+  winners_paid boolean DEFAULT false
 );
 ALTER TABLE games ENABLE ROW LEVEL SECURITY;
 CREATE POLICY g_read ON games FOR SELECT TO anon, authenticated USING (true);
@@ -180,6 +221,83 @@ END $$;
 
 CREATE TRIGGER refund_on_player_delete BEFORE DELETE ON players
   FOR EACH ROW EXECUTE FUNCTION refund_player_stake();
+
+-- The pot half of the same pair, in its INHERITED form (20251227082804), and
+-- present for the same reason: so db/20-post/018 has something to replace.
+--
+-- Reproduced with its two defects intact, because they are what 018 asserts
+-- against:
+--
+--   * the COALESCE is INSIDE the query, so a MISSING settings row yields NULL
+--     rather than 20 -- and winner_prize then becomes NULL
+--   * no `IF ... IS NULL` guard after the read, unlike refund_player_stake()
+--
+-- Writing the FIXED version here would make 018's probe pass against code 018
+-- did not produce, which is the vacuity trap this file already documents twice.
+CREATE OR REPLACE FUNCTION update_game_pot()
+RETURNS TRIGGER LANGUAGE plpgsql AS $$
+DECLARE commission_rate_val integer;
+BEGIN
+  SELECT COALESCE(value::integer, 20) INTO commission_rate_val
+    FROM settings WHERE id = 'commission_rate';
+  UPDATE games
+     SET total_pot = total_pot + stake_amount,
+         winner_prize = FLOOR((total_pot + stake_amount) * (100 - commission_rate_val) / 100)
+   WHERE id = NEW.game_id;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER update_pot_on_player_join AFTER INSERT ON players
+  FOR EACH ROW EXECUTE FUNCTION update_game_pot();
+
+-- The payout trigger, as 20251218160619 defines it.
+--
+-- Present because game_tick() finishing a game is what FIRES it: closing an
+-- expired claim window sets status='finished', and everything a winner is
+-- actually paid happens in here. Testing the loop without this would test that
+-- a status column changes value, which is not the part that costs money.
+--
+-- Reproduced faithfully, including `winners_paid` guarding against double
+-- payment -- that guard is one of the things db/test/game_tick_test.sql asserts.
+CREATE OR REPLACE FUNCTION payout_winners()
+RETURNS TRIGGER SECURITY DEFINER SET search_path = public LANGUAGE plpgsql AS $$
+DECLARE w uuid; prize integer;
+BEGIN
+  IF NEW.status = 'finished' AND NEW.winners_paid = false
+     AND NEW.winner_ids IS NOT NULL AND array_length(NEW.winner_ids, 1) > 0 THEN
+    prize := NEW.winner_prize_each;
+    FOREACH w IN ARRAY NEW.winner_ids LOOP
+      UPDATE telegram_users tu
+         SET won_balance = COALESCE(tu.won_balance,0) + prize,
+             total_won   = COALESCE(tu.total_won,0) + prize,
+             win_count   = COALESCE(tu.win_count,0) + 1
+        FROM players p
+       WHERE p.id = w AND p.telegram_user_id = tu.telegram_user_id;
+    END LOOP;
+    NEW.winners_paid = true;
+  END IF;
+  RETURN NEW;
+END $$;
+
+CREATE TRIGGER payout_on_game_finish BEFORE UPDATE ON games
+  FOR EACH ROW WHEN (NEW.status = 'finished' AND OLD.status <> 'finished')
+  EXECUTE FUNCTION payout_winners();
+
+-- ---------------------------------------------------------------------------
+-- What db/20-post/001 needs beyond the tables
+--
+-- The publication it asserts covers games and players, and the four cleanup
+-- functions it schedules. cron.schedule() stores its command as text without
+-- parsing it, so the bodies are irrelevant -- but the publication assertion is
+-- a real check of a real failure (Realtime connecting and silently delivering
+-- nothing), so the publication is built properly rather than stubbed.
+-- ---------------------------------------------------------------------------
+CREATE PUBLICATION supabase_realtime FOR TABLE games, players;
+
+CREATE FUNCTION cleanup_old_game_events()  RETURNS void LANGUAGE sql AS $$ SELECT $$;
+CREATE FUNCTION cleanup_old_snapshots()    RETURNS void LANGUAGE sql AS $$ SELECT $$;
+CREATE FUNCTION cleanup_old_user_states()  RETURNS void LANGUAGE sql AS $$ SELECT $$;
+CREATE FUNCTION expire_old_pending_sms()   RETURNS void LANGUAGE sql AS $$ SELECT $$;
 
 CREATE TABLE bank_options (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -252,8 +370,20 @@ CREATE FUNCTION create_game_with_server_time()
 RETURNS json LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$ BEGIN RETURN '{}'::json; END $$;
 CREATE FUNCTION get_bnb_withdrawal_stats()
 RETURNS json LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$ BEGIN RETURN '{}'::json; END $$;
-CREATE FUNCTION game_tick(p_call_interval_ms integer DEFAULT 3500, p_claim_window_ms integer DEFAULT 1000, p_countdown_seconds integer DEFAULT 25)
-RETURNS jsonb LANGUAGE plpgsql SECURITY DEFINER SET search_path=public AS $$ BEGIN RETURN '{}'::jsonb; END $$;
+-- NO game_tick STUB. db/20-post/002 now runs against this fixture and defines
+-- the real five-argument function itself.
+--
+-- The stub that used to be here took THREE arguments, so once 002 stopped being
+-- skipped both signatures existed and 002's own
+-- `REVOKE ALL ON FUNCTION game_tick` -- unqualified -- failed with
+--
+--   ERROR: function name "game_tick" is not unique
+--
+-- which is precisely the failure scripts/check-migrations.mjs was written about,
+-- arriving from the fixture rather than from a migration. 002 now names its
+-- argument types; this stub is deleted rather than corrected, because a stub
+-- shadowing the real thing is what made the harness able to disagree with
+-- production in the first place.
 
 -- The stale one-argument overload db/20-post/004 drops. Present so that DROP is
 -- exercised rather than skipped.

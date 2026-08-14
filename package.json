@@ -1,5 +1,5 @@
 {
-  "name": "vite-react-typescript-starter",
+  "name": "fanosbingo-miniapp",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json",
+    "test:app": "tsx src/utils/bingoUtils.test.ts",
     "stress:generate": "cd stress-test && npx tsx generate-test-users.ts",
     "stress:cleanup": "cd stress-test && npx tsx cleanup-test-data.ts",
     "stress:monitor": "cd stress-test && npx tsx monitor-database.ts",

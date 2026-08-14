@@ -179,6 +179,81 @@ async function tryAcquireLock() {
 const QUEUE_HEALTH_INTERVAL_MS = Number(process.env.QUEUE_HEALTH_INTERVAL_MS ?? 60_000);
 let lastQueueHealthAt = 0;
 
+/**
+ * Balance reconciliation, on a slower schedule again.
+ *
+ * FIVE MINUTES, not one, and the reason is cost rather than urgency.
+ * reconcile_balances() groups the whole of balance_entries and joins it to
+ * telegram_users, so it is O(entries) -- trivial at this size and not something
+ * to run every second forever. Drift is also not a race: if a balance has moved
+ * without being journalled, it will still have done so in five minutes, and
+ * nothing about answering sooner changes the response.
+ *
+ * WHAT THE METRIC IS FOR. db/20-post/019 makes the journal the primary record of
+ * every balance movement. A journal nobody compares against the balances is a
+ * table that grows; the comparison is the control, and publishing it is what
+ * turns "we could reconcile" into "we would be told". drifted > 0 means either a
+ * balance moved without an entry or an entry was altered, and both are things to
+ * find out about from an alarm rather than from a player.
+ */
+const RECONCILE_INTERVAL_MS = Number(process.env.RECONCILE_INTERVAL_MS ?? 300_000);
+let lastReconcileAt = 0;
+
+async function publishBalanceDrift(client) {
+  if (!cloudwatch) return;
+
+  const now = Date.now();
+  if (now - lastReconcileAt < RECONCILE_INTERVAL_MS) return;
+  lastReconcileAt = now;
+
+  try {
+    const { rows } = await client.query('SELECT reconcile_balances() AS r');
+    const r = rows[0]?.r;
+    if (!r) return;
+
+    const drifted = Number(r.drifted ?? 0);
+
+    // Logged, not just published, and at error rather than info: a CloudWatch
+    // metric says how many, while the log says WHICH -- and the accounts are
+    // what somebody actually needs when they start looking.
+    if (drifted > 0) {
+      log('error', 'balance ledger drift detected', {
+        drifted,
+        drift_total: Number(r.drift_total ?? 0),
+        accounts: r.worst,
+      });
+    }
+
+    const dims = [{ Name: 'Environment', Value: ENVIRONMENT }];
+
+    await cloudwatch.send(
+      new PutMetricDataCommand({
+        Namespace: METRIC_NAMESPACE,
+        MetricData: [
+          {
+            // THE alarm metric of this pair. Zero is the invariant; any other
+            // value means the ledger and the balances disagree.
+            MetricName: 'BalanceDriftAccounts',
+            Value: drifted,
+            Unit: 'Count',
+            Dimensions: dims,
+          },
+          {
+            // Size, not just existence. One account out by 1 and one out by
+            // 40000 are different incidents.
+            MetricName: 'BalanceDriftTotal',
+            Value: Number(r.drift_total ?? 0),
+            Unit: 'Count',
+            Dimensions: dims,
+          },
+        ],
+      })
+    );
+  } catch (error) {
+    log('warn', 'Failed to publish balance drift', { error: error.message });
+  }
+}
+
 async function publishQueueHealth(client) {
   if (!cloudwatch) return;
 
@@ -323,6 +398,9 @@ async function tick() {
   // would. `pool` rather than the lock connection -- this is an ordinary read
   // and must not share the session that holds the advisory lock.
   await publishQueueHealth(pool);
+
+  // Ledger reconciliation, on a slower interval again, for the same reasons.
+  await publishBalanceDrift(pool);
 }
 
 /**

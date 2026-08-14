@@ -58,6 +58,7 @@ import { verifyChainId, chainName } from './chain.js';
 import { bodyParserErrorHandler } from './http-errors.js';
 import { createRateLimiter, limitByPlayer } from './rate-limit.js';
 import { createSnsAlertHandler } from './alerts.js';
+import { createDeepReadyHandler } from './upstreams.js';
 import { createOperatorNotifier } from './notify.js';
 import { createTelegramWebhookHandler } from './telegram-webhook.js';
 import { createSelectCardHandler } from './select-card.js';
@@ -320,6 +321,20 @@ app.get('/readyz', async (_req, res) => {
     res.status(503).json({ ready: false });
   }
 });
+
+/**
+ * GET /readyz/deep — is the whole ORIGIN serving?
+ *
+ * The one an external health check should watch. /healthz proves Caddy is up
+ * (it answers that path itself, without touching an upstream) and /readyz proves
+ * this service can reach the database. Neither says anything about postgrest or
+ * realtime, and there are no ECS task-count alarms either -- so until this
+ * existed, three of the five containers could stop with no alarm anywhere.
+ *
+ * See src/upstreams.js for why a non-200 from an upstream still counts as up,
+ * and why this is one endpoint instead of three paid health checks.
+ */
+app.get('/readyz/deep', createDeepReadyHandler(pool));
 
 /**
  * POST /auth/telegram  { initData }  ->  { token, expires_in, user }

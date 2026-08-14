@@ -42,6 +42,41 @@
  *
  * If you need another, the honest options are to pay for it, to retire one that
  * has never fired, or to fold two related signals into a metric math alarm.
+ *
+ * FOUR MORE ALARMS AND A SECOND HEALTH CHECK, all count-gated and all OFF by
+ * default, added to close the gaps a review found. Costed here rather than left
+ * for the next person to discover on a bill:
+ *
+ *   origin-degraded          the deep check. postgrest, realtime and functions
+ *                            could each stop with NO alarm anywhere -- the only
+ *                            external check is answered by Caddy itself, and
+ *                            there are no ECS task-count alarms. Three of five
+ *                            containers, silently.
+ *   balance-ledger-drift     db/20-post/019's journal disagreeing with the
+ *                            balances. Without it the ledger is a table that
+ *                            grows rather than a control.
+ *   host-memory-high         basic EC2 metrics contain NO memory or disk
+ *   host-disk-high           figure at all -- they are inside the guest, where
+ *                            AWS cannot see. modules/ecs keeps detailed
+ *                            monitoring off, so the five-container box had no
+ *                            signal for either.
+ *
+ * COST WHEN ALL FOUR ARE ENABLED, at list price:
+ *
+ *   4 alarms                        $0.40   (all past the free ten)
+ *   1 Route 53 health check         $0.75   (non-AWS endpoint rate, as above)
+ *   4 custom metrics                $1.20   BalanceDrift{Accounts,Total},
+ *                                           {Memory,Disk}UsedPercent
+ *   PutMetricData calls            ~$0.10   one every 5 minutes
+ *                                   -----
+ *                                   $2.45 / month
+ *
+ * ZERO while the flags are false, which is how they ship. That is a real
+ * fraction of a $32 budget and it is the cheapest form this coverage takes --
+ * the alternative for the host metrics is the CloudWatch agent, whose default
+ * configuration publishes a dozen metrics rather than two, and the alternative
+ * for the deep check is three separate health checks at $0.75 each instead of
+ * one endpoint that names which upstream failed.
  */
 
 resource "aws_sns_topic" "alerts" {
@@ -634,6 +669,146 @@ resource "aws_cloudwatch_metric_alarm" "api_unreachable" {
 }
 
 # ---------------------------------------------------------------------------
+# Is the origin SERVING, or merely answering?
+#
+# THE GAP THIS CLOSES, which was most of the stack.
+#
+# aws_route53_health_check.api above requests var.health_check_path, and
+# services/caddy/Caddyfile answers that path itself with `respond "ok" 200`. That
+# is the right design for a reachability check -- it stays meaningful while an
+# upstream is down, which is exactly when you want it. But it was the ONLY thing
+# looking from outside, and there are no ECS RunningTaskCount alarms, so:
+#
+#   ticker stops       game_loop_stalled fires
+#   caddy/instance     api_unreachable and ec2_status_check fire
+#   postgrest stops    nothing. The SPA's whole data path is dead, silently.
+#   realtime stops     nothing. No live game updates, silently.
+#   functions stops    nothing. No login, no deposits, no withdrawals, silently.
+#
+# Three of five containers could stop and no alarm anywhere would say so. The
+# first anyone would know is a player complaining, which for a real-money game is
+# not a monitoring strategy.
+#
+# ONE CHECK, NOT THREE. A Route 53 check against a non-AWS endpoint is $0.50/mo,
+# so covering the upstreams separately is $1.50/mo against a $32 budget --
+# affordable, and it buys less. The endpoint probes all three from inside the box
+# and names the failure in its body and in the log, so the page already says what
+# broke. See services/functions/src/upstreams.js.
+#
+# COUNT-GATED SEPARATELY from the reachability check, because it has a
+# precondition that one does not: the functions image must actually serve
+# /readyz/deep. See the variable.
+# ---------------------------------------------------------------------------
+resource "aws_route53_health_check" "origin_deep" {
+  count = var.enable_deep_health_check ? 1 : 0
+
+  type = "HTTPS"
+  fqdn = "api.${var.domain_name}"
+  port = 443
+
+  resource_path = var.deep_health_check_path
+
+  # SLOWER AND MORE FORGIVING than the reachability check, on purpose. That one
+  # answers from Caddy and either works or does not; this one depends on three
+  # upstreams, one of which (realtime) runs Ecto migrations on boot and is
+  # legitimately unavailable for a few seconds after a deploy. Three failures at
+  # 30s is ~90 seconds, which outlasts a normal restart and still catches a
+  # container that is not coming back.
+  request_interval  = 30
+  failure_threshold = 3
+
+  measure_latency = false
+  enable_sni      = true
+
+  tags = merge(var.tags, { Name = "${var.name_prefix}-origin-serving" })
+}
+
+# us-east-1 only, for the same reason as api_unreachable above: Route 53
+# publishes HealthCheckStatus exclusively there, and an alarm on it created
+# elsewhere sits at INSUFFICIENT_DATA forever.
+resource "aws_cloudwatch_metric_alarm" "origin_degraded" {
+  count = var.enable_deep_health_check ? 1 : 0
+
+  alarm_name        = "${var.name_prefix}-origin-degraded"
+  alarm_description = "api.${var.domain_name}${var.deep_health_check_path} is not returning 200: one of postgrest, realtime or the database is down. The site may still answer while being unusable. The response body and the functions log name which one."
+
+  namespace   = "AWS/Route53"
+  metric_name = "HealthCheckStatus"
+  statistic   = "Minimum"
+
+  period              = 60
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  comparison_operator = "LessThanThreshold"
+  threshold           = 1
+
+  dimensions = { HealthCheckId = aws_route53_health_check.origin_deep[0].id }
+
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  # Same reasoning as every other alarm here: a monitor that stops reporting is
+  # indistinguishable, from where the player stands, from the thing it monitors
+  # being down.
+  treat_missing_data = "breaching"
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# Does the ledger still agree with the balances?
+#
+# db/20-post/019 journals every change to deposited_balance and won_balance with
+# an append-only entry, and reconcile_balances() compares the sum of a player's
+# entries against their actual balance. The ticker publishes the number of
+# disagreeing accounts every five minutes.
+#
+# ZERO IS THE INVARIANT. A non-zero value means either a balance moved without
+# being journalled -- a code path that bypassed the trigger, or a manual UPDATE
+# with triggers disabled -- or an entry was altered after the fact. There is no
+# benign cause, so the threshold is 0 rather than a tolerance.
+#
+# THIS IS THE POINT OF HAVING A LEDGER. A journal nobody compares against the
+# balances is a table that grows; the comparison is the control. Publishing it is
+# what turns "we could reconcile if we looked" into "we would be told".
+#
+# The alarm carries a count. WHICH accounts is in the ticker's log, written at
+# error alongside the metric, because that is what somebody starting to
+# investigate actually needs.
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_metric_alarm" "balance_drift" {
+  count = var.enable_balance_drift_alarm ? 1 : 0
+
+  alarm_name        = "${var.name_prefix}-balance-ledger-drift"
+  alarm_description = "One or more player balances disagree with their own journal in balance_entries. Money moved without being recorded, or a record was changed. Query: SELECT reconcile_balances(); and check the ticker log for balance_ledger_drift."
+
+  namespace   = var.metric_namespace
+  metric_name = "BalanceDriftAccounts"
+  statistic   = "Maximum"
+
+  # The ticker publishes every five minutes, so a 600s period always contains a
+  # datapoint. Two of them before alarming, because a reconciliation that runs
+  # in the middle of a multi-statement money movement could in principle observe
+  # an intermediate state -- twice in a row is not that.
+  period              = 600
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = 0
+
+  dimensions    = { Environment = var.environment }
+  alarm_actions = [aws_sns_topic.alerts.arn]
+
+  # Recovery matters here: drift that resolves itself is worth knowing about,
+  # because it means something is racing rather than broken.
+  ok_actions = [aws_sns_topic.alerts.arn]
+
+  treat_missing_data = "breaching"
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------------------------
 # Did last night's backup happen?
 #
 # THE CASE A FAILURE NOTIFICATION CANNOT COVER.
@@ -766,6 +941,81 @@ resource "aws_cloudwatch_metric_alarm" "pending_withdrawals_stale" {
   alarm_actions      = [aws_sns_topic.alerts.arn]
   ok_actions         = [aws_sns_topic.alerts.arn]
   treat_missing_data = "notBreaching"
+
+  tags = var.tags
+}
+
+# ---------------------------------------------------------------------------
+# The inside of the instance
+#
+# Basic EC2 monitoring reports CPU, network and disk I/O -- all from the
+# hypervisor, none from inside the guest. Memory and filesystem usage are not
+# available to AWS at all without something in the instance publishing them, and
+# modules/ecs deliberately keeps detailed monitoring off to avoid the charge.
+#
+# The result was a five-container box with no memory or disk signal. An OOM kill
+# surfaced only as whichever container-specific alarm happened to notice it, and
+# a filling root volume would have surfaced as the container runtime failing to
+# pull an image mid-deploy.
+#
+# user_data publishes both every five minutes with the AWS CLI it already
+# installs. See the variables for why that rather than the CloudWatch agent.
+# ---------------------------------------------------------------------------
+resource "aws_cloudwatch_metric_alarm" "host_memory" {
+  count = var.enable_host_metric_alarms ? 1 : 0
+
+  alarm_name        = "${var.name_prefix}-host-memory-high"
+  alarm_description = "Host memory above ${var.memory_alarm_threshold_percent}%. The instance runs five containers with a 2 GiB swapfile, so this precedes an OOM kill rather than reporting one -- Realtime's BEAM VM is the usual cause."
+
+  namespace   = var.metric_namespace
+  metric_name = "MemoryUsedPercent"
+  statistic   = "Average"
+
+  # Published every 5 minutes, so a 300s period holds exactly one datapoint.
+  # Three of them before alarming: a join spike is allowed to be brief.
+  period              = 300
+  evaluation_periods  = 3
+  datapoints_to_alarm = 3
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.memory_alarm_threshold_percent
+
+  dimensions    = { Environment = var.environment }
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  # NOT breaching, unlike the game-loop and backup alarms, and the difference is
+  # deliberate. Those watch heartbeats where silence IS the failure. This watches
+  # a level, and its publisher stopping means the instance is gone -- which
+  # ec2_status_check and api_unreachable already cover, from two directions. A
+  # third alarm for the same event is noise, and noise is how alarms get muted.
+  treat_missing_data = "missing"
+
+  tags = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "host_disk" {
+  count = var.enable_host_metric_alarms ? 1 : 0
+
+  alarm_name        = "${var.name_prefix}-host-disk-high"
+  alarm_description = "Root volume above ${var.disk_alarm_threshold_percent}%. It holds container images and the swapfile; when it fills, image pulls fail and a deploy breaks. `docker image prune` on the instance via SSM Session Manager is the usual fix."
+
+  namespace   = var.metric_namespace
+  metric_name = "DiskUsedPercent"
+  statistic   = "Maximum"
+
+  # Two periods, not three. Disk usage does not spike and recover the way memory
+  # does -- if it is high twice running it is high.
+  period              = 300
+  evaluation_periods  = 2
+  datapoints_to_alarm = 2
+  comparison_operator = "GreaterThanThreshold"
+  threshold           = var.disk_alarm_threshold_percent
+
+  dimensions    = { Environment = var.environment }
+  alarm_actions = [aws_sns_topic.alerts.arn]
+  ok_actions    = [aws_sns_topic.alerts.arn]
+
+  treat_missing_data = "missing"
 
   tags = var.tags
 }

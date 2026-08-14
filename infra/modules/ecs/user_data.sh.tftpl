@@ -69,4 +69,94 @@ else
   echo "ERROR: ec2:AssociateAddress permission and the Environment tag condition."
 fi
 
+# ---------------------------------------------------------------------------
+# 4. Host metrics
+#
+# WHY NOT THE CLOUDWATCH AGENT. It is the obvious answer and it is the wrong one
+# at this budget: the agent is another package to install and keep patched,
+# another config file to get wrong, and its default configuration publishes a
+# dozen metrics at $0.30 each. This publishes exactly TWO, using the AWS CLI that
+# is already installed above for the Elastic IP association.
+#
+#   2 metrics + 2 alarms  ~= $0.80/month
+#   PutMetricData calls   ~= $0.09/month at one call every five minutes
+#
+# WHAT WAS BLIND WITHOUT IT. `monitoring { enabled = false }` on the launch
+# template means five-minute basic metrics, and basic EC2 metrics do not include
+# memory or disk at all -- AWS cannot see inside the instance. So the box running
+# all five containers, with ~1.03 GiB of steady-state usage against 2 GiB and a
+# 30 GiB volume accumulating container images, had no memory or disk signal
+# whatsoever. An OOM kill showed up only as whichever container-specific alarm
+# happened to notice, and a filling disk would have shown up as PostgreSQL
+# refusing writes.
+#
+# MEMORY IS MEASURED AS (total - available), not (total - free). `free` counts
+# page cache as used, which on a box doing container I/O sits near 100% forever
+# and would make the metric useless. `available` is the kernel's own estimate of
+# what a new process could actually get.
+#
+# Failures are deliberately not fatal to the boot. A metric that cannot publish
+# must not be the reason an instance fails to join the cluster.
+# ---------------------------------------------------------------------------
+cat > /usr/local/bin/publish-host-metrics.sh <<'SCRIPT'
+#!/bin/bash
+set -uo pipefail
+
+REGION="${region}"
+NAMESPACE="${metric_namespace}"
+ENVIRONMENT="${environment}"
+
+# Percent of memory genuinely unavailable to a new process.
+mem=$(free | awk '/^Mem:/ {printf "%.1f", ($2 - $7) / $2 * 100}')
+
+# Root volume. Holds container images and the swapfile; when it fills,
+# PostgreSQL is not the thing that breaks first, the container runtime is.
+disk=$(df --output=pcent / | tail -1 | tr -dc '0-9')
+
+[ -z "$mem" ] && exit 0
+[ -z "$disk" ] && exit 0
+
+aws cloudwatch put-metric-data \
+  --region "$REGION" \
+  --namespace "$NAMESPACE" \
+  --metric-data \
+    "MetricName=MemoryUsedPercent,Value=$mem,Unit=Percent,Dimensions=Environment=$ENVIRONMENT" \
+    "MetricName=DiskUsedPercent,Value=$disk,Unit=Percent,Dimensions=Environment=$ENVIRONMENT" \
+  || echo "publish-host-metrics: put-metric-data failed"
+SCRIPT
+chmod +x /usr/local/bin/publish-host-metrics.sh
+
+# systemd rather than cron: AL2023 ships systemd and does not ship crond.
+cat > /etc/systemd/system/host-metrics.service <<'UNIT'
+[Unit]
+Description=Publish host memory and disk usage to CloudWatch
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/publish-host-metrics.sh
+UNIT
+
+# Five minutes, matching the basic-monitoring cadence the rest of this instance
+# reports at. Persistent=true so a missed run after a reboot fires promptly
+# rather than waiting out the full interval.
+cat > /etc/systemd/system/host-metrics.timer <<'UNIT'
+[Unit]
+Description=Publish host metrics every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNIT
+
+systemctl daemon-reload
+systemctl enable --now host-metrics.timer || echo "WARNING: host-metrics.timer did not start"
+
+# Publish once immediately, so the alarms have a datapoint without waiting for
+# the first timer tick. They treat missing data as breaching.
+/usr/local/bin/publish-host-metrics.sh || true
+
 echo "=== bootstrap complete ==="

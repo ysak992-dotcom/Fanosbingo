@@ -101,6 +101,11 @@ module "ecs" {
 
   # Pinned in ami.tf, bumped by pull request. See that file.
   ami_id = local.ecs_ami_id
+
+  # Where user_data's host-metrics timer publishes memory and disk usage. Taken
+  # from iam so it matches the namespace that role's PutMetricData condition
+  # allows and the namespace modules/monitoring alarms on.
+  metric_namespace = module.iam.metric_namespace
 }
 
 module "rds" {
@@ -389,6 +394,27 @@ module "monitoring" {
   # Must match the namespace the containers publish to, or the game-loop alarm
   # watches nothing. Sourced from iam rather than restated, so it cannot drift.
   metric_namespace = module.iam.metric_namespace
+
+  # OFF UNTIL THE CODE THEY WATCH IS DEPLOYED HERE. Same reasoning, and the same
+  # sequence, as the block in environments/prod/main.tf -- deploy first, confirm
+  # the endpoint answers and the metric exists, then flip both and apply.
+  #
+  # dev is where that sequence should be rehearsed, since it deploys first and a
+  # permanently-red alarm here costs nothing but still demonstrates the ordering.
+  enable_deep_health_check   = false
+  enable_balance_drift_alarm = false
+
+  # OFF for a THIRD reason, and a different one: these two watch metrics that
+  # only exist once an instance has booted with the new user_data. That is a
+  # LAUNCH TEMPLATE change, and modules/ecs is explicit that such a change does
+  # not take effect on apply -- the ASG references $Latest, so Terraform sees no
+  # diff on it and instance_refresh never fires. It needs a deliberate
+  # `aws autoscaling start-instance-refresh`, which is a ~194-second outage
+  # measured on prod on 2026-08-13. See AGENTS.md section 7.
+  #
+  # So: apply, then refresh the instance at a quiet moment, then confirm
+  # MemoryUsedPercent has a datapoint, then turn this on.
+  enable_host_metric_alarms = false
 
   # The external health check probes api.<domain_name>. Passed from the same
   # variable the app_stack and cloudflare modules use, so the thing being checked

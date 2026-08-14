@@ -188,6 +188,8 @@ resource "aws_launch_template" "app" {
     region            = data.aws_region.current.region
     eip_allocation_id = aws_eip.app.allocation_id
     swap_size_mb      = var.swap_size_mb
+    metric_namespace  = var.metric_namespace
+    environment       = var.environment
   }))
 
   tag_specifications {

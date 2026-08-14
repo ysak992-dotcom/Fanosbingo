@@ -118,3 +118,15 @@ variable "tags" {
   type        = map(string)
   default     = {}
 }
+
+variable "metric_namespace" {
+  description = <<-EOT
+    CloudWatch namespace the host metrics publisher writes to.
+
+    Must match what the instance role's PutMetricData condition permits and what
+    modules/monitoring alarms on, or the metrics are either rejected by IAM or
+    published somewhere nothing is watching. Sourced from modules/iam in the
+    environment roots rather than restated, so the three cannot drift.
+  EOT
+  type        = string
+}

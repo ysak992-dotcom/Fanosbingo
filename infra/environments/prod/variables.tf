@@ -137,3 +137,54 @@ variable "telegram_alert_chat_id" {
   type        = string
   default     = ""
 }
+
+variable "real_money" {
+  description = <<-EOT
+    Whether this environment holds real player money. FLIP THIS BEFORE THE FIRST
+    REAL DEPOSIT, not after.
+
+    It is the switch modules/rds checks its durability settings against: with it
+    true, the apply FAILS unless backup_retention_period >= 7, multi_az is on,
+    deletion protection is on and a final snapshot is required. All four need the
+    PAID account plan, which is the same upgrade that removes the credit
+    exhaustion deadline -- so this variable is really one billing decision
+    expressed as a precondition.
+
+    It replaces a comment. environments/prod/main.tf said "ONE, AND IT MUST
+    BECOME 7 BEFORE THE FIRST REAL DEPOSIT" and gated two other settings on the
+    same promise, enforced by nobody. This cannot force anyone to set it, but it
+    makes the four settings impossible to change halfway -- which is the version
+    of the mistake that still looks correct in a diff.
+
+    WHAT IT DELIBERATELY DOES NOT COVER: instance_count. Running two application
+    instances is not a variable flip -- the single Elastic IP model in modules/ecs
+    only works with one, so two needs an ALB and service discovery (see the
+    header of modules/ecs_service on the awsvpc/ENI limits). A precondition
+    demanding something not yet deployable would block the upgrade rather than
+    guide it. The 194-second replacement outage measured on 2026-08-13 remains
+    the accepted trade, and AGENTS.md section 7 is where it is recorded.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "accept_single_az_risk" {
+  description = <<-EOT
+    Acknowledge running the real-money database in ONE availability zone.
+
+    Only consulted when real_money is true. Multi-AZ roughly doubles the RDS
+    instance cost, and this project runs to a ~$32/month budget -- so it is not
+    forced. What modules/rds forces is that the choice is RECORDED: without this,
+    "real money, one AZ" is indistinguishable in a diff from nobody having
+    thought about it.
+
+    Accepting it means: an AZ failure takes the balance ledger offline until
+    somebody restores by hand. The nightly pg_dump to S3 under Object Lock bounds
+    how much data is lost; nothing bounds the downtime. That is a reasonable
+    trade for a small player base and stops being one as the base grows -- which
+    is the point at which the second instance, and the ALB it needs, become worth
+    their cost.
+  EOT
+  type        = bool
+  default     = false
+}

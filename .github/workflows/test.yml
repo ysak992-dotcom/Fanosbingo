@@ -101,6 +101,27 @@ jobs:
         run: npx tsc -p tsconfig.json
         working-directory: services/functions
 
+      # A GATE, AT `low`, AND IT IS CLEAN TODAY.
+      #
+      # Nothing scanned dependencies until now. Trivy runs in terraform.yml and
+      # covers IaC misconfiguration and committed secrets -- not packages -- so a
+      # known-vulnerable transitive dependency could reach the container that
+      # verifies HMACs, mints sessions and signs BSC transactions with nothing
+      # objecting.
+      #
+      # `low` rather than `high` because this tree is SMALL and clean: express,
+      # jsonwebtoken, pg, @aws-sdk/client-kms, viem. There is no backlog to
+      # tolerate, so the threshold that catches the most is also the one that
+      # blocks nothing -- and a gate set at the level you are already at is the
+      # only kind that stays meaningful.
+      #
+      # --omit=dev is deliberately ABSENT. The Dockerfile installs with
+      # --omit=dev, but a compromised build-time dependency is a supply-chain
+      # problem for the image regardless of whether it ships inside it.
+      - name: audit dependencies
+        run: npm audit --audit-level=low
+        working-directory: services/functions
+
   ticker:
     name: ticker service
     runs-on: ubuntu-latest
@@ -136,6 +157,13 @@ jobs:
       # game_tick() once a second.
       - name: typecheck
         run: npx tsc -p tsconfig.json
+        working-directory: services/ticker
+
+      # Same gate, same level, same reason as the functions service above. This
+      # tree is two dependencies (pg and @aws-sdk/client-cloudwatch) and is
+      # clean, so `low` costs nothing and catches everything.
+      - name: audit dependencies
+        run: npm audit --audit-level=low
         working-directory: services/ticker
 
   spa:
@@ -206,24 +234,81 @@ jobs:
       - name: lint
         run: npm run lint
 
+      # TWO THRESHOLDS, AND THE SPLIT IS THE HONEST PART.
+      #
+      # Nothing scanned dependencies until now. Trivy in terraform.yml covers IaC
+      # and committed secrets, not packages. The first run of this found 13
+      # vulnerabilities in production dependencies, 6 of them high; `npm audit
+      # fix` cleared 11 with no breaking change and no effect on typecheck, lint
+      # or the build.
+      #
+      # ONE HIGH REMAINS and cannot be fixed from here:
+      #
+      #   @reown/appkit-adapter-wagmi -> @base-org/account -> @coinbase/cdp-sdk
+      #     -> @solana/web3.js -> jayson -> uuid  (GHSA-w5hq-g745-h8pq)
+      #
+      # It is six levels down a direct dependency, so clearing it needs an
+      # upstream release, not a lockfile edit. It is also in the DEFERRED crypto
+      # stack: src/lib/features.ts gates every wallet surface behind
+      # VITE_CRYPTO_ENABLED, which is false, and the chunk is dynamically
+      # imported so it is not fetched at all.
+      #
+      # So `critical` is the GATE -- clean today, blocks nothing, and catches
+      # anything genuinely severe -- and `high` runs ADVISORY so the count stays
+      # visible instead of being silently tolerated.
+      #
+      # PROMOTE THE ADVISORY TO A GATE when either becomes true:
+      #   * @reown/appkit ships a fix, and the high count reaches zero
+      #   * VITE_CRYPTO_ENABLED is set to true for any environment -- at which
+      #     point that dependency is live in a browser handling wallets, and
+      #     "it is behind a flag" stops being an argument
+      # A GATE, and the first test the Mini App has ever had.
+      #
+      # Lobby.tsx, GameRoom.tsx and Admin.tsx are 3,266 lines that display and
+      # spend player money, and typecheck plus lint were the only things
+      # inspecting any of it. Those catch shapes, not decisions.
+      #
+      # What this covers is the decisions, in the functions that make them:
+      # checkWin -- which decides whether a player is offered the claim button
+      # that leads to a payout -- and formatBirr, which renders every balance a
+      # player sees. See src/utils/bingoUtils.test.ts for why testing these
+      # beats rendering the components.
+      #
+      # tsx rather than vitest, deliberately: tsx is already a devDependency for
+      # the stress-test scripts, so this adds a test runner without adding a
+      # dependency, a config file or jsdom.
+      - name: test the Mini App logic
+        run: npm run test:app
+
+      - name: audit dependencies (gate)
+        run: npm audit --omit=dev --audit-level=critical
+
+      - name: audit dependencies (advisory)
+        continue-on-error: true
+        run: |
+          echo "Advisory. See the comment in .github/workflows/test.yml for the"
+          echo "one known high and the two conditions for making this a gate."
+          npm audit --omit=dev --audit-level=high
+
   migrations:
     name: migration contract
     runs-on: ubuntu-latest
 
-    # A real PostgreSQL, so the migrations can be executed rather than described.
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_PASSWORD: fixture
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-        ports:
-          - 5432:5432
-
+    # NO `services:` BLOCK, deliberately, and it is what unblocked the game loop.
+    #
+    # This used to start a stock postgres:16 here and hand the script a
+    # DATABASE_URL. Two problems, and the second is the one that mattered:
+    #
+    #   1. CI and a developer's machine ran different servers, so "works locally"
+    #      and "passes CI" were genuinely different claims.
+    #   2. GitHub Actions cannot pass server arguments to a service container --
+    #      there is no `command`, and `options` maps to `docker create`. So
+    #      shared_preload_libraries=pg_cron could NEVER be set here, which is
+    #      exactly why db/20-post/001 and 002 were skipped, which is exactly why
+    #      game_tick() had no test.
+    #
+    # scripts/test-migrations.sh builds db/test/Dockerfile and runs it itself,
+    # with the flags. Docker is present on the runner and the script picks it up.
     steps:
       - uses: actions/checkout@v4
 
@@ -264,16 +349,21 @@ jobs:
       # merged green, and the only thing standing in the way was somebody
       # remembering to run psql by hand.
       #
-      # Applies db/20-post/003 onwards against db/test/fixture.sql, TWICE --
-      # these files are repeatable, so one that only works against a clean
-      # database is broken in a way a single pass cannot see.
+      # Applies ALL of db/20-post against db/test/fixture.sql, TWICE -- these
+      # files are repeatable, so one that only works against a clean database is
+      # broken in a way a single pass cannot see -- and then DRIVES game_tick()
+      # through a full round and asserts what it did.
+      #
+      # 001 and 002 are no longer skipped. They assert wal_level=logical and
+      # pg_cron, which the image built from db/test/Dockerfile provides.
       #
       # Does NOT cover db/00-bootstrap or the 104 inherited migrations: the
-      # bootstrap asserts wal_level=logical and pg_cron in
-      # shared_preload_libraries, and neither is available in a stock image.
-      - name: Migrations actually apply
-        env:
-          DATABASE_URL: postgresql://postgres:fixture@127.0.0.1:5432/postgres
+      # fixture is production-SHAPED, not production. A column that exists there
+      # and not here is still only caught by the run against dev.
+      #
+      # No DATABASE_URL: the script builds and runs its own server. See the
+      # comment on the missing `services:` block above.
+      - name: Migrations apply, and the game loop behaves
         run: ./scripts/test-migrations.sh
 
   scripts:

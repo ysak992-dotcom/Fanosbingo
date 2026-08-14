@@ -126,6 +126,9 @@ BEGIN
     deduct_from_won := stake_amount_val - user_deposited;
   END IF;
 
+  -- Names this movement in the balance ledger (db/20-post/019).
+  PERFORM set_config('app.ledger_reason', 'stake', true);
+
   UPDATE telegram_users
   SET
     deposited_balance = deposited_balance - deduct_from_deposited,
@@ -191,6 +194,9 @@ BEGIN
     refund_won := COALESCE(OLD.stake_from_won, 0);
   END IF;
 
+  -- Names this movement in the balance ledger (db/20-post/019).
+  PERFORM set_config('app.ledger_reason', 'stake_refund', true);
+
   UPDATE telegram_users
   SET
     deposited_balance = deposited_balance + refund_deposited,
@@ -198,13 +204,12 @@ BEGIN
     total_spent       = GREATEST(0, total_spent - (refund_deposited + refund_won))
   WHERE telegram_user_id = OLD.telegram_user_id;
 
-  SELECT COALESCE(value::integer, 25) INTO commission_rate_val
-  FROM settings
-  WHERE id = 'commission_rate';
-
-  IF commission_rate_val IS NULL THEN
-    commission_rate_val := 25;
-  END IF;
+  -- ONE reader, shared with update_game_pot(). This used to be an inline read
+  -- with a fallback of 25 while update_game_pot() fell back to 20, so releasing
+  -- a card rebuilt the pot at a different house cut than joining had built it
+  -- with. See db/20-post/013 for that, and for the worse half: with the setting
+  -- row absent, neither fallback fired at all.
+  commission_rate_val := commission_rate();
 
   SELECT GREATEST(0, total_pot - game_stake_amount) INTO new_total_pot
   FROM games

@@ -180,3 +180,79 @@ resource "aws_db_instance" "this" {
   # unretained ones. See the comment on aws_cloudwatch_log_group.exports.
   depends_on = [aws_cloudwatch_log_group.exports]
 }
+
+# ---------------------------------------------------------------------------
+# The promise, made mechanical
+#
+# environments/prod/main.tf spent 34 lines explaining that backup_retention_period
+# is 1 because the free plan refuses more, that this is acceptable only because
+# there is no real money yet, and that "THE TRIGGER IS THE FIRST REAL DEPOSIT,
+# not a date and not a release". That reasoning is correct and it was enforced by
+# a comment, alongside two other settings gated on the same unenforced promise.
+#
+# A comment cannot fail an apply. This can.
+#
+# WHAT IT DOES NOT DO, said plainly so nobody mistakes its scope: it cannot know
+# whether a real deposit has happened. Terraform cannot see the deposit_requests
+# table, and a flag somebody must set is still a flag somebody must set. What it
+# removes is the PARTIAL state -- declaring the environment live while two of the
+# four durability settings still say otherwise, which is the version of this
+# mistake that looks fine in a diff.
+#
+# Written as a terraform_data precondition rather than a validation block on the
+# variable, because the condition spans several variables. Same shape as
+# terraform_data.cloudflare_range_sanity in modules/security_groups and
+# terraform_data.cloudflare_zone_required in environments/prod.
+# ---------------------------------------------------------------------------
+resource "terraform_data" "real_money_durability" {
+  lifecycle {
+    precondition {
+      condition = !var.real_money || var.backup_retention_period >= 7
+      error_message = join("", [
+        "real_money is true but backup_retention_period is ${var.backup_retention_period}. ",
+        "Point-in-time recovery of ${var.backup_retention_period} day(s) means a problem discovered on Friday about Monday is unrecoverable. ",
+        "This needs the PAID account plan -- the free plan refuses any value above 1 with FreeTierRestrictionError, measured against the live instance. ",
+        "The same upgrade lifts Multi-AZ and removes the credit-exhaustion deadline. See CUTOVER.md.",
+      ])
+    }
+
+    # MULTI-AZ IS NOT FORCED, AND THAT IS DELIBERATE.
+    #
+    # An earlier version of this block required it outright. That was the wrong
+    # control for this project: Multi-AZ roughly DOUBLES the RDS instance cost,
+    # and a precondition that demands real spending is one an operator on a
+    # budget routes around by never setting real_money at all -- which loses the
+    # three cheap guarantees above as well. A gate people disable is worse than
+    # no gate.
+    #
+    # So the cost decision stays with whoever pays the bill, and what is enforced
+    # is that it was DECIDED rather than defaulted into. Setting
+    # accept_single_az_risk records the choice in the diff, where a reviewer sees
+    # it, instead of leaving multi_az = false looking like nobody considered it.
+    #
+    # What the risk actually is, so the acknowledgement means something: an AZ
+    # failure takes the ledger offline until somebody restores it by hand, and
+    # RDS is the one resource here that cannot be rebuilt from git. The nightly
+    # pg_dump to S3 under Object Lock is what bounds the loss; it does not bound
+    # the downtime.
+    precondition {
+      condition = !var.real_money || var.multi_az || var.accept_single_az_risk
+      error_message = join("", [
+        "real_money is true and multi_az is false. ",
+        "An availability-zone failure would take the balance ledger offline until somebody restores it by hand, and RDS is the one resource in this stack that cannot be rebuilt from git. ",
+        "Multi-AZ roughly doubles the instance cost and needs the paid plan. ",
+        "If that is not affordable yet, that is a legitimate call -- set accept_single_az_risk = true to record it deliberately, and keep the nightly S3 dumps working, because they become the ONLY recovery path.",
+      ])
+    }
+
+    precondition {
+      condition     = !var.real_money || var.deletion_protection
+      error_message = "real_money is true but deletion_protection is false. Nothing should be able to destroy the balance ledger with a plan that says 1 to destroy."
+    }
+
+    precondition {
+      condition     = !var.real_money || !var.skip_final_snapshot
+      error_message = "real_money is true but skip_final_snapshot is true. A deliberate destroy would leave no copy of the balances at all."
+    }
+  }
+}
