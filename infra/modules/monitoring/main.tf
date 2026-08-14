@@ -909,6 +909,16 @@ resource "aws_cloudwatch_metric_alarm" "backup_missing" {
   # One period of the full window: the metric is published once a day, so a
   # shorter period would spend most of its life with no datapoint and alarm on
   # ordinary quiet rather than on a missed backup.
+  #
+  # AND THE WINDOW HAS A HARD CEILING, which this got wrong for its whole life.
+  # CloudWatch requires Period x EvaluationPeriods <= 86400, so with a single
+  # evaluation period the window cannot exceed 24 hours. backup_alarm_hours was
+  # 30, giving a period of 108000 -- which AWS ACCEPTED and then never evaluated.
+  #
+  # Both environments' alarms sat at OK while citing datapoints days old, and dev
+  # went 78 hours with no backup datapoint without this changing state once. See
+  # the variable for the measurements; its validation now refuses a value that
+  # would reproduce it.
   period              = var.backup_alarm_hours * 3600
   evaluation_periods  = 1
   datapoints_to_alarm = 1

@@ -67,23 +67,61 @@ env:
 
 jobs:
   backup:
-    name: Dump ${{ github.event.inputs.environment || 'prod' }}
+    name: Dump ${{ matrix.environment }}
     runs-on: ubuntu-latest
+
+    # BOTH ENVIRONMENTS ON A SCHEDULE, the dispatched one on demand.
+    #
+    # This read `github.event.inputs.environment || 'prod'`, so a scheduled run
+    # -- which supplies no inputs -- backed up PROD ONLY. dev therefore had no
+    # nightly dump at all, and on 2026-08-14 that was the environment holding
+    # every real player balance: the last dev dump before then was 2026-08-11,
+    # taken by hand.
+    #
+    # The asymmetry was invisible because nothing failed. The backup alarm
+    # watches HoursSinceLastBackup per environment and was only ever enabled for
+    # the environment that was being backed up.
+    #
+    # fail-fast: false, deliberately. These are independent backups of
+    # independent databases; one failing must not cancel the other, and the
+    # whole point of the pair is that neither depends on the other.
+    strategy:
+      fail-fast: false
+      matrix:
+        environment: >-
+          ${{ fromJSON(github.event_name == 'schedule'
+                && '["prod","dev"]'
+                || format('["{0}"]', github.event.inputs.environment)) }}
 
     # Declaring the environment is what puts this behind its protection rules
     # and gives the OIDC subject `environment:<name>`. infra/modules/iam is
     # explicit that `ref:refs/heads/main` must NOT be enough to reach a role
     # that can read the database.
-    environment: ${{ github.event.inputs.environment || 'prod' }}
+    #
+    # WORTH KNOWING, because it makes the schedule less automatic than it looks:
+    # the `prod` environment carries a REQUIRED REVIEWER, so the nightly prod
+    # dump waits for a person to approve it. Measured on the last four scheduled
+    # runs: 4 seconds, 7 minutes, 5 minutes, and 82 minutes. It is a backup of
+    # the money database that does not happen while nobody is looking, which is
+    # exactly when it is most wanted -- and the 30-hour backup-did-not-run alarm
+    # is a backstop for a miss that is designed in rather than accidental.
+    #
+    # Not fixable here: the deploy role's trust policy requires the
+    # `environment:prod` subject, so dropping the declaration to skip the gate
+    # would break the OIDC assumption instead. It is a repository setting, and
+    # `dev` has no such rule -- which is the other reason this matrix helps, as
+    # dev's dump now runs unattended even on a night nobody approves prod's.
+    environment: ${{ matrix.environment }}
 
     # A second copy running while the first holds a tunnel would fight over the
-    # local port and produce two objects for one night.
+    # local port and produce two objects for one night. Keyed per environment,
+    # so the two matrix legs do not serialise against each other.
     concurrency:
-      group: db-backup-${{ github.event.inputs.environment || 'prod' }}
+      group: db-backup-${{ matrix.environment }}
       cancel-in-progress: false
 
     env:
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'prod' }}
+      ENVIRONMENT: ${{ matrix.environment }}
       AWS_REGION: ${{ vars.AWS_REGION }}
 
     steps:
@@ -103,7 +141,7 @@ jobs:
           #
           # The other database workflows already use this role; this one was the
           # odd path out.
-          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ github.event.inputs.environment || 'prod' }}-github-deploy
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/fanosbingo-${{ matrix.environment }}-github-deploy
           aws-region: ${{ vars.AWS_REGION }}
           role-session-name: db-backup-${{ github.run_id }}
 

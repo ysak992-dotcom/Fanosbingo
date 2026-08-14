@@ -282,16 +282,51 @@ variable "backup_alarm_hours" {
   description = <<-EOT
     Hours without a successful backup before alerting.
 
-    THIRTY, against a 24-hour schedule. Wide enough that a queued runner or an
-    hour of GitHub trouble does not page anybody, narrow enough that two missed
-    nights cannot pass unnoticed.
+    TWENTY-FOUR, AND IT CANNOT BE MORE. This read 30, with a validation block
+    REQUIRING more than 24 -- and that combination is exactly what stopped the
+    alarm from working at all.
+
+    CloudWatch requires Period x EvaluationPeriods <= 86400 seconds. The alarm
+    below uses one evaluation period of the full window, so 30 hours meant a
+    period of 108000, over the ceiling. AWS accepted the alarm and then never
+    evaluated it again.
+
+    Measured on the live account on 2026-08-14, both environments:
+
+      dev  StateReason cites a datapoint from 06/08/26 -- eight days stale
+      prod StateReason cites a datapoint from 10/08/26 -- four days stale
+      dev  alarm history: ONE transition ever, INSUFFICIENT_DATA -> OK on 08-07
+
+    In that time dev went 78 HOURS with no backup datapoint (2026-08-11 to
+    2026-08-14) and the alarm stayed OK throughout. For contrast, the game-loop
+    alarm at period 60 updates normally.
+
+    So the one control answering "did last night's backup happen" has never
+    answered it, in either environment, since it was created -- and it is the
+    control guarding the only recovery point older than 24 hours, because the
+    account plan caps point-in-time recovery at one day.
+
+    THE OLD VALIDATION IS INVERTED, not merely wrong. It enforced the condition
+    that guarantees the alarm cannot evaluate, in the name of preventing a
+    false alarm between normal runs.
+
+    THE COST OF 24, stated rather than hidden: there is no slack. A backup more
+    than 24 hours after the previous one pages somebody. Against a 04:00 cron
+    that is usually fine, and where it is not -- the `prod` environment carries
+    a REQUIRED REVIEWER, so its nightly dump waits for a human, measured at up
+    to 82 minutes -- the alarm firing IS the information. A backup that did not
+    happen on time is the thing this exists to report.
+
+    A wider window is not expressible as a single metric alarm. It would need
+    the metric to carry the real AGE and be published more often than daily,
+    rather than a once-a-day heartbeat whose absence is the signal.
   EOT
   type        = number
-  default     = 30
+  default     = 24
 
   validation {
-    condition     = var.backup_alarm_hours > 24
-    error_message = "Must exceed the 24-hour backup interval, or the alarm fires between normal runs."
+    condition     = var.backup_alarm_hours > 0 && var.backup_alarm_hours <= 24
+    error_message = "Must be between 1 and 24. CloudWatch requires Period x EvaluationPeriods <= 86400 seconds, and this alarm uses a single evaluation period, so anything above 24 hours produces an alarm that AWS accepts and never evaluates -- which is how both backup alarms sat at OK through a 78-hour gap."
   }
 }
 
