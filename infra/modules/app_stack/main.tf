@@ -432,7 +432,20 @@ module "functions" {
     # zero posts is what it looked like.
     ALLOWED_ORIGIN = "https://app.${var.domain_name}"
     API_BASE_URL   = "https://api.${var.domain_name}"
-    POSTGREST_URL  = "http://127.0.0.1:3000"
+
+    # POSTGREST_URL WAS HERE, SET TO http://127.0.0.1:3000, AND IT WAS A TRAP.
+    #
+    # Nothing in services/functions ever read it, so it was never wrong in a way
+    # anything noticed -- and it was wrong. This service runs in BRIDGE mode, so
+    # 127.0.0.1 is its own namespace; only caddy is in HOST mode, which is why
+    # the Caddyfile can use that address and this cannot.
+    #
+    # It cost a deploy to learn. src/upstreams.js copied the address from the
+    # Caddyfile for its readiness probe and reported both upstreams down with
+    # ECONNREFUSED while both were serving 200. Removed rather than corrected,
+    # because dead configuration that looks authoritative is how the next person
+    # inherits the same mistake. Anything that needs the host from a bridge
+    # container resolves its default gateway -- see hostAddress() there.
 
     # Chain identity comes from HERE -- infrastructure config Terraform owns per
     # environment -- and never from the settings table, which application code

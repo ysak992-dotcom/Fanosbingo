@@ -42,10 +42,69 @@
  * container refuses the connection, which is what this detects.
  *
  * The database is checked properly, because that one this service does own.
+ *
+ * WHERE THE UPSTREAMS ACTUALLY ARE, which the first version of this got wrong.
+ *
+ * It defaulted to http://127.0.0.1:3000 and :4000, copied from the Caddyfile.
+ * Caddy reaches them there because Caddy runs in HOST network mode -- it has to,
+ * to own :443 on the instance. This service runs in BRIDGE mode, so 127.0.0.1 is
+ * its OWN namespace and those ports are not in it. Deployed to dev, the endpoint
+ * duly reported both upstreams down with ECONNREFUSED while both were serving
+ * 200 through Caddy: a health check that fails when everything is fine, which is
+ * worse than the blindness it replaced.
+ *
+ * A bridge container reaches the host at its DEFAULT GATEWAY -- the docker
+ * bridge address, conventionally 172.17.0.1 but not guaranteed. It is read from
+ * /proc/net/route rather than hardcoded, so a different bridge subnet does not
+ * silently reproduce this bug.
+ *
+ * Both URLs stay overridable by environment variable, which is what the tests
+ * use and what a future move to awsvpc or Fargate would need.
  */
+
+import fs from 'node:fs';
 
 /** Long enough for a loaded box, short enough that the probe cannot hang. */
 const DEFAULT_TIMEOUT_MS = 2_000;
+
+/**
+ * The host, as seen from inside a bridge-networked container: its default
+ * gateway.
+ *
+ * /proc/net/route stores the gateway as LITTLE-ENDIAN hex, so 010011AC is
+ * 172.17.0.1 and not 1.0.17.172. Getting that backwards produces an address
+ * that looks plausible and routes nowhere, which is why the byte order is
+ * asserted in the tests rather than assumed.
+ *
+ * Exported for the tests; the file is read through a parameter so they need no
+ * fixture on disk.
+ */
+export function parseDefaultGateway(routeTable) {
+  for (const line of String(routeTable).split('\n').slice(1)) {
+    const f = line.trim().split(/\s+/);
+    // Destination 00000000 is the default route. Gateway 00000000 means the
+    // interface is directly connected and has no gateway to speak of.
+    if (f.length > 2 && f[1] === '00000000' && f[2] !== '00000000') {
+      const hex = f[2];
+      return [6, 4, 2, 0].map((i) => parseInt(hex.substr(i, 2), 16)).join('.');
+    }
+  }
+  return null;
+}
+
+/**
+ * Falls back to 127.0.0.1 rather than throwing. A container that cannot read
+ * its own route table should still start and still answer -- the probe then
+ * reports the upstreams down, which is visible, where a crash on boot is a
+ * service that never comes up at all.
+ */
+export function hostAddress({ readFile = () => fs.readFileSync('/proc/net/route', 'utf8') } = {}) {
+  try {
+    return parseDefaultGateway(readFile()) ?? '127.0.0.1';
+  } catch {
+    return '127.0.0.1';
+  }
+}
 
 /**
  * Is something listening and speaking HTTP at this URL?
@@ -96,10 +155,21 @@ export async function probeHttp(url, { timeoutMs = DEFAULT_TIMEOUT_MS, fetchImpl
  * @param {{ postgrest?: string, realtime?: string }} [opts.urls]  overridden in tests
  * @param {number}   [opts.timeoutMs]
  * @param {typeof fetch} [opts.fetchImpl]
+ * @param {string}   [opts.host]  the host address to probe. Pinned by the tests
+ *                                so they do not depend on the route table of
+ *                                whatever machine runs them; resolved from the
+ *                                container's default gateway otherwise.
  */
-export function createDeepReadyHandler(pool, { urls = {}, timeoutMs, fetchImpl } = {}) {
-  const postgrestUrl = urls.postgrest ?? 'http://127.0.0.1:3000/';
-  const realtimeUrl = urls.realtime ?? 'http://127.0.0.1:4000/';
+export function createDeepReadyHandler(pool, { urls = {}, timeoutMs, fetchImpl, host } = {}) {
+  // Resolved ONCE at construction. The gateway does not change while the
+  // container lives, and reading /proc on every health check would be a syscall
+  // per probe for a value that cannot move.
+  const hostIp = host ?? hostAddress();
+
+  const postgrestUrl =
+    urls.postgrest ?? process.env.POSTGREST_PROBE_URL ?? `http://${hostIp}:3000/`;
+  const realtimeUrl =
+    urls.realtime ?? process.env.REALTIME_PROBE_URL ?? `http://${hostIp}:4000/`;
 
   return async function deepReady(req, res) {
     const [database, postgrest, realtime] = await Promise.all([
