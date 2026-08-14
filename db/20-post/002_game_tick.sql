@@ -157,6 +157,8 @@ DECLARE
   v_next_game_number   integer;
   v_new_game_id        uuid;
   v_oldest_call_age_ms integer := 0;
+  v_keeper             uuid;
+  v_surplus_closed     integer := 0;
 BEGIN
   -- =========================================================================
   -- 1. Close expired claim windows
@@ -281,11 +283,67 @@ BEGIN
   END LOOP;
 
   -- =========================================================================
-  -- 4. Ensure a waiting game exists
+  -- 4. Close surplus waiting games
+  --
+  -- Step 5 guarantees AT LEAST one waiting game. Nothing guaranteed AT MOST
+  -- one, and the difference is not academic: dev has carried two since
+  -- 2026-08-13, created days apart with duplicate game numbers (13 and 1, from
+  -- two different numbering series). Neither ever starts, because neither has
+  -- players and step 3 only starts a game that does; so the ticker rolls both
+  -- countdowns forever and the lobby has a second game nobody can join.
+  --
+  -- The check-then-insert in step 5 is only serialised by the ticker's advisory
+  -- lock. That is enough to stop the ticker racing ITSELF, and nothing else:
+  -- create_next_game_after_finish() inserts on the finish trigger,
+  -- ensure_waiting_game_exists() is still callable, and the browser-driven
+  -- version this function replaced could do it too. A duplicate from any of
+  -- those is permanent, because nothing ever removed one.
+  --
+  -- ONLY EMPTY GAMES ARE DELETED, and that guard is load-bearing rather than
+  -- cautious. players.game_id is REFERENCES games(id) ON DELETE CASCADE, and a
+  -- cascade performs a real DELETE on the child rows -- which fires
+  -- refund_player_stake() BEFORE DELETE ON players. Deleting a waiting game
+  -- that somebody had joined would therefore refund every player in it and
+  -- rewrite balances. The keeper is chosen as the game WITH players when there
+  -- is one, so the surviving lobby is the one people are actually sitting in.
+  --
+  -- DELETE RATHER THAN status='finished', which is the obvious alternative and
+  -- is exactly wrong here: create_next_game_on_finish fires AFTER UPDATE when a
+  -- game reaches 'finished' and inserts a new waiting game. Finishing a surplus
+  -- game would create a replacement for it.
+  --
+  -- If two waiting games BOTH have players this deletes neither, deliberately.
+  -- That is a state no automatic rule should resolve by discarding somebody's
+  -- seat; it stays visible in waiting_games below.
+  -- =========================================================================
+  SELECT g.id INTO v_keeper
+    FROM games g
+   WHERE g.status = 'waiting'
+   ORDER BY (EXISTS (SELECT 1 FROM players p WHERE p.game_id = g.id)) DESC,
+            g.created_at ASC
+   LIMIT 1;
+
+  IF v_keeper IS NOT NULL THEN
+    FOR v_game IN
+      SELECT g.id
+        FROM games g
+       WHERE g.status = 'waiting'
+         AND g.id <> v_keeper
+         AND NOT EXISTS (SELECT 1 FROM players p WHERE p.game_id = g.id)
+       FOR UPDATE SKIP LOCKED
+    LOOP
+      DELETE FROM games WHERE id = v_game.id;
+      v_surplus_closed := v_surplus_closed + 1;
+    END LOOP;
+  END IF;
+
+  -- =========================================================================
+  -- 5. Ensure a waiting game exists
   --
   -- Previously done by whichever browser noticed first, via a non-atomic
   -- "check then insert" that let two clients create two games. Here the
-  -- ticker's advisory lock already serialises it.
+  -- ticker's advisory lock already serialises it -- against itself. Step 4 is
+  -- what handles a duplicate arriving from anywhere else.
   -- =========================================================================
   IF NOT EXISTS (SELECT 1 FROM games WHERE status = 'waiting') THEN
     SELECT coalesce(max(game_number), 0) + 1 INTO v_next_game_number FROM games;
@@ -317,7 +375,7 @@ BEGIN
   END IF;
 
   -- =========================================================================
-  -- 5. Health signal
+  -- 6. Health signal
   --
   -- The age of the least-recently-called playing game. The ticker publishes
   -- this as SecondsSinceLastNumberCalled; an alarm on it is what turns a frozen
@@ -336,6 +394,10 @@ BEGIN
     'countdowns_rolled',    v_countdowns_rolled,
     'claims_closed',        v_claims_closed,
     'waiting_game_created', v_game_created,
+    'surplus_games_closed', v_surplus_closed,
+    -- Published so "two lobbies, both with players" -- the one case step 4
+    -- refuses to resolve on its own -- is visible rather than silent.
+    'waiting_games', (SELECT count(*) FROM games WHERE status = 'waiting'),
     'oldest_call_age_ms',   v_oldest_call_age_ms,
     'active_games', (SELECT count(*) FROM games WHERE status = 'playing')
   );

@@ -332,6 +332,117 @@ BEGIN
   RAISE NOTICE '  9 ok  a stalled game is visible in the health metric';
 END $$;
 
+-- ===========================================================================
+-- 10 & 11. Surplus waiting games converge to one, without discarding a seat
+--
+-- game_tick() guaranteed AT LEAST one waiting game and never AT MOST one, so a
+-- duplicate from any other source -- the finish trigger, ensure_waiting_game_exists,
+-- the browser-driven version this replaced -- was permanent. dev carried two
+-- from 2026-08-13 until this was written.
+--
+-- 11 is the assertion that matters. players.game_id cascades from games, and a
+-- cascade fires refund_player_stake() BEFORE DELETE ON players -- so deleting a
+-- waiting game somebody had joined would refund every player in it and rewrite
+-- balances. A convergence rule that is not choosy about WHICH game it keeps is
+-- worse than the duplicate it fixes.
+-- ===========================================================================
+DO $$
+DECLARE
+  r jsonb; v_keep uuid; v_extra uuid; v_stake integer; v_n integer;
+BEGIN
+  PERFORM game_tick();
+  SELECT id, stake_amount INTO v_keep, v_stake FROM games WHERE status = 'waiting';
+
+  -- A second, empty waiting game, exactly as the duplicate on dev looks.
+  INSERT INTO games (status, host_id, called_numbers, game_number, starts_at,
+                     selection_closed_at, current_number, winner_ids,
+                     stake_amount, total_pot, winner_prize, winner_prize_each)
+  VALUES ('waiting', 'system', ARRAY[]::integer[], 999,
+          now() + interval '25 seconds', now() + interval '20 seconds',
+          NULL, ARRAY[]::uuid[], v_stake, 0, 0, 0)
+  RETURNING id INTO v_extra;
+
+  SELECT count(*) INTO v_n FROM games WHERE status = 'waiting';
+  IF v_n <> 2 THEN
+    RAISE EXCEPTION '10: could not build the case; % waiting games, expected 2.', v_n;
+  END IF;
+
+  r := game_tick();
+
+  SELECT count(*) INTO v_n FROM games WHERE status = 'waiting';
+  IF v_n <> 1 THEN
+    RAISE EXCEPTION '10: a surplus empty waiting game survived the tick; % remain.', v_n;
+  END IF;
+
+  IF (r->>'surplus_games_closed')::integer <> 1 THEN
+    RAISE EXCEPTION '10: surplus_games_closed was %, expected 1.', r->>'surplus_games_closed';
+  END IF;
+
+  -- The OLDER one is kept, so the lobby people are looking at does not move.
+  IF NOT EXISTS (SELECT 1 FROM games WHERE id = v_keep AND status = 'waiting') THEN
+    RAISE EXCEPTION '10: the wrong game was kept -- the established lobby was deleted.';
+  END IF;
+
+  IF (r->>'waiting_games')::integer <> 1 THEN
+    RAISE EXCEPTION '10: waiting_games reported %, expected 1.', r->>'waiting_games';
+  END IF;
+
+  RAISE NOTICE ' 10 ok  a surplus empty waiting game is closed, the older one kept';
+END $$;
+
+DO $$
+DECLARE
+  r jsonb; v_old uuid; v_joined uuid; v_stake integer; v_n integer; v_bal integer;
+BEGIN
+  DELETE FROM players;
+  DELETE FROM games;
+  DELETE FROM telegram_users WHERE telegram_user_id < 0;
+
+  PERFORM game_tick();
+  SELECT id, stake_amount INTO v_old, v_stake FROM games WHERE status = 'waiting';
+
+  -- A NEWER waiting game, which somebody has joined. The keeper rule must
+  -- prefer it over the older empty one, or the join is refunded away.
+  INSERT INTO games (status, host_id, called_numbers, game_number, starts_at,
+                     selection_closed_at, current_number, winner_ids,
+                     stake_amount, total_pot, winner_prize, winner_prize_each)
+  VALUES ('waiting', 'system', ARRAY[]::integer[], 998,
+          now() + interval '25 seconds', now() + interval '20 seconds',
+          NULL, ARRAY[]::uuid[], v_stake, 0, 0, 0)
+  RETURNING id INTO v_joined;
+
+  INSERT INTO telegram_users (telegram_user_id, telegram_username, deposited_balance, won_balance)
+  VALUES (-999100004, '_seat', v_stake * 5, 0);
+  INSERT INTO players (game_id, telegram_user_id, selected_number, name, card)
+  VALUES (v_joined, -999100004, 4, '_seat', '[]'::jsonb);
+
+  SELECT deposited_balance INTO v_bal FROM telegram_users WHERE telegram_user_id = -999100004;
+
+  r := game_tick();
+
+  IF NOT EXISTS (SELECT 1 FROM games WHERE id = v_joined AND status = 'waiting') THEN
+    RAISE EXCEPTION '11: the waiting game WITH a player was deleted. Its players cascade, and that fires refund_player_stake -- every seat in it just got refunded.';
+  END IF;
+
+  IF EXISTS (SELECT 1 FROM games WHERE id = v_old) THEN
+    RAISE EXCEPTION '11: the older EMPTY game survived; the keeper rule did not prefer the one with a player.';
+  END IF;
+
+  SELECT count(*) INTO v_n FROM players WHERE game_id = v_joined;
+  IF v_n <> 1 THEN
+    RAISE EXCEPTION '11: the surviving game holds % player rows, expected 1.', v_n;
+  END IF;
+
+  IF (SELECT deposited_balance FROM telegram_users WHERE telegram_user_id = -999100004) <> v_bal THEN
+    RAISE EXCEPTION '11: the balance moved. A refund fired during convergence.';
+  END IF;
+
+  DELETE FROM players;
+  DELETE FROM telegram_users WHERE telegram_user_id = -999100004;
+
+  RAISE NOTICE ' 11 ok  a waiting game with players is kept, and nobody is refunded';
+END $$;
+
 -- ---------------------------------------------------------------------------
 -- Leave nothing behind.
 -- ---------------------------------------------------------------------------
@@ -339,4 +450,4 @@ DELETE FROM players;
 DELETE FROM games;
 DELETE FROM telegram_users WHERE telegram_user_id < 0;
 
-DO $$ BEGIN RAISE NOTICE 'game_tick: nine behaviours, all asserted by running the loop'; END $$;
+DO $$ BEGIN RAISE NOTICE 'game_tick: eleven behaviours, all asserted by running the loop'; END $$;
