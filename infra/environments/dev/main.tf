@@ -423,7 +423,22 @@ module "monitoring" {
   #
   # So: apply, then refresh the instance at a quiet moment, then confirm
   # MemoryUsedPercent has a datapoint, then turn this on.
-  enable_host_metric_alarms = false
+  # ON. The instance refresh is done and the metrics are arriving:
+  #
+  #   MemoryUsedPercent  54.6  at 2026-08-15T10:44 +03:00
+  #   DiskUsedPercent    20.0  at 2026-08-15T10:44 +03:00
+  #
+  # The refresh took 202 seconds and was verified in the order AGENTS.md section
+  # 7 gives -- EIP reattached to the new instance, all five services back at 1/1,
+  # the timer actually present on the box, and the game loop still advancing.
+  #
+  # AND THE TIMER BEING ACTIVE PROVED NOTHING. The first boot ran it every five
+  # minutes for half an hour and published nothing at all: the CLI rejected the
+  # dimension shape before the call was made, and the script's `||` swallowed it,
+  # so `systemctl is-active` said active while the metric did not exist. Only
+  # asking CloudWatch for the datapoint found it. Do that before turning any of
+  # these on -- an alarm on a metric nothing publishes treats missing data as
+  # breaching and is red from creation.
 
   # The external health check probes api.<domain_name>. Passed from the same
   # variable the app_stack and cloudflare modules use, so the thing being checked
