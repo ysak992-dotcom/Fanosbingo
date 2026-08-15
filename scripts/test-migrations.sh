@@ -177,4 +177,15 @@ else
   echo "$output" | sed 's/^/  /'
   exit 1
 fi
+echo
+info "Attacking the game"
+if output="$("${PSQL[@]}" -f "$REPO_ROOT/db/test/game_integrity_test.sql" 2>&1)"; then
+  echo "$output" | grep -E 'NOTICE:' | sed -E 's/^.*NOTICE:  //' || true
+  echo "${GREEN}${BOLD}the game refuses every attack.${NC}"
+else
+  echo "${RED}${BOLD}GAME INTEGRITY FAILED${NC}"
+  echo "$output" | sed 's/^/  /'
+  exit 1
+fi
+
 echo "${YELLOW}Covers all of db/20-post against a production-SHAPED fixture. The bootstrap and the 104 inherited migrations are still only exercised by the run against dev.${NC}"

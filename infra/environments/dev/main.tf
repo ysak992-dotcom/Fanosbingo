@@ -188,7 +188,7 @@ module "rds" {
   # AND NO BUDGET CAN WARN YOU. An earlier version of this comment credited the
   # account-wide budget with making the credit burn visible. It cannot: every
   # budget watches SPEND, and spend is zero while credits absorb the bill --
-  # measured at -0.0000001/day in Cost Explorer while credits fell about $1.30 a
+  # measured at -0.0000001/day in Cost Explorer while credits fell $3.60 a
   # day. What actually watches it is FreeTierCreditsRemaining, published daily by
   # .github/workflows/free-tier-runway.yml and alarmed in modules/monitoring.
   backup_retention_period = 1

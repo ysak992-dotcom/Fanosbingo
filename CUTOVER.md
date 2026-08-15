@@ -262,7 +262,14 @@ comments say why:
 
 The free-tier one deserves saying plainly: destroy `dev` without it and the
 account loses its only warning that it is heading for suspension, on a schedule
-that currently lands in early December 2026.
+that now lands in **late September 2026** — measured 2026-08-15 at $3.60/day
+against $134.97 remaining, not the $1.30/day and December this document used to
+quote. See HANDOVER.md section 2 for the four days of data.
+
+Note the irony in the ordering: destroying `dev` is also the single biggest lever
+on that schedule, roughly doubling the runway. So the alarm must exist in prod
+*before* dev goes, and dev going is one of the two things that pushes the
+deadline back.
 
 ### Zone ownership moves in the same change
 

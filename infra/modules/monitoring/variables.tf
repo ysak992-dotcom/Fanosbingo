@@ -349,12 +349,19 @@ variable "free_tier_credit_floor" {
   description = <<-EOT
     Credit balance, in USD, below which to alert.
 
-    Roughly a month of runway at the observed burn of ~$1.30/day. It is a
+    Roughly a month of runway at the observed burn of $3.60/day. It is a
     DURATION expressed in dollars, not an opinion about dollars -- if the burn
     rises, this should rise with it.
+
+    IT ROSE, AND THIS FOLLOWED. The default was 50, set against a measured
+    $1.30/day when only one environment existed. Both dev and prod have run full
+    stacks since the cutover and the burn is now $3.60/day (measured 2026-08-15
+    across four days of FreeTierCreditsRemaining), which made $50 fourteen days'
+    notice rather than thirty -- for a decision that may need a billing change to
+    act on. 110 restores the month this was always meant to buy.
   EOT
   type        = number
-  default     = 50
+  default     = 110
 }
 
 variable "enable_host_metric_alarms" {

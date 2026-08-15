@@ -846,8 +846,8 @@ resource "aws_cloudwatch_metric_alarm" "balance_drift" {
 #
 # Every budget in this project watches SPEND. On a FREE account plan spend is
 # zero -- credits absorb the bill before it reaches Cost Explorer, measured at
-# -0.0000001/day while the credit balance falls by about $1.30/day. So all of
-# them sit at OK right up to the moment the account is suspended.
+# -0.0000001/day while the credit balance falls by $3.60/day. So all of them sit
+# at OK right up to the moment the account is suspended.
 #
 # And suspension is what happens: a FREE plan that exhausts its credits does not
 # start billing, it SUSPENDS RESOURCES. For a real-money game that is the game
@@ -856,14 +856,26 @@ resource "aws_cloudwatch_metric_alarm" "balance_drift" {
 # TWO DEADLINES, and the nearer one is not the one written in the docs:
 #
 #   plan expiry   2027-01-14, fixed
-#   credits       ~$150 at ~$1.30/day, so roughly 115 days
+#   credits       $134.97 at $3.60/day, so roughly 37 days
 #
-# The credits bind first. Alarming on the balance rather than the date is what
-# makes that visible.
+# The credits bind first, and by a wide margin. MEASURED 2026-08-15 from the
+# daily FreeTierCreditsRemaining metric, four consecutive days:
+#
+#   08-11 $146.78   08-12 $142.85   08-13 $139.06   08-14 $135.97
+#   deltas: 3.93, 3.79, 3.09  ->  mean 3.60/day
+#
+# THIS FILE PREVIOUSLY SAID ~$1.30/day AND ROUGHLY 115 DAYS, which put exhaustion
+# in December. That figure was measured when ONE environment existed. Since the
+# cutover both dev and prod run full stacks -- two instances, two databases, two
+# of everything -- and the burn nearly tripled. The deadline moved from December
+# to LATE SEPTEMBER 2026 and no document noticed, because the number was written
+# down once and never re-measured.
 #
 # THRESHOLD is a month of runway at the observed burn, which is enough time to
-# upgrade the plan deliberately rather than in a hurry. Raise it if the burn
-# rises -- the number is a duration expressed in dollars, not a dollar opinion.
+# upgrade the plan deliberately rather than in a hurry. It moved 50 -> 110 with
+# the burn, exactly as the note below it always said it should: the number is a
+# duration expressed in dollars, not a dollar opinion. At $3.60/day, $50 was 14
+# days' notice for a decision that may need a billing change to act on.
 #
 # treat_missing_data = "breaching": the metric is published once a day by
 # .github/workflows/free-tier-runway.yml, so its absence means that check has

@@ -127,7 +127,7 @@ module "rds" {
   # THE TRIGGER IS THE FIRST REAL DEPOSIT, not a date and not a release. On that
   # day this must be 7, which needs the paid account plan, and the same upgrade
   # lifts Multi-AZ, enables GuardDuty and removes the credit-exhaustion deadline
-  # that currently lands in early December 2026. One billing decision closes all
+  # that now lands in LATE SEPTEMBER 2026. One billing decision closes all
   # four. See CUTOVER.md.
   #
   # The mitigation until then is unchanged and is the stronger control anyway:
@@ -370,7 +370,7 @@ module "monitoring" {
   #
   # Every budget watches SPEND, and spend is zero on a FREE plan -- credits
   # absorb the bill before Cost Explorer sees it, measured at -0.0000001/day
-  # while credits fell about $1.30 a day. So every budget sits at OK until the
+  # while credits fell $3.60 a day. So every budget sits at OK until the
   # account is suspended.
   #
   # dev carries this today. The moment prod serves the domain, prod is what must

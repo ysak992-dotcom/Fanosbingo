@@ -87,20 +87,44 @@ Two practical consequences, both changed:
 
 ```
 plan          FREE / ACTIVE
-credits       $141.67, falling ~$2.20/day with BOTH environments running
+credits       $134.97, falling $3.60/day with BOTH environments running
 expiry        2027-01-14
 ```
 
-Two deadlines. **The credits bind first — roughly mid-October 2026**, and every
-document quotes the January date. The rate doubled when prod was stood up
-alongside dev: one environment burns about $1.30/day, two burn about $2.20.
-Retiring dev is the single biggest lever on how long this runs. On a FREE plan, exhausting credits
-**suspends resources**; it does not bill.
+Two deadlines. **The credits bind first — around 2026-09-22**, and every document
+used to quote the January date.
+
+MEASURED 2026-08-15 from four consecutive days of `FreeTierCreditsRemaining`:
+
+| date | balance | delta |
+|---|---|---|
+| 08-11 | $146.78 | |
+| 08-12 | $142.85 | −$3.93 |
+| 08-13 | $139.06 | −$3.79 |
+| 08-14 | $135.97 | −$3.09 |
+| | | **mean −$3.60/day** |
+
+At $3.09–$3.93/day that is **34–44 days** from 2026-08-15, so late September
+rather than mid-October — and nothing like the December this file and four
+Terraform comments used to claim. The estimate has been wrong twice in the same
+direction, both times because it was written down once and not re-measured: first
+$1.30/day when only dev existed, then $2.20/day as a guess at what two would
+cost. The actual figure for two is $3.60.
+
+**Retiring dev is the single biggest lever.** Cost Explorer's tagged split is
+`dev $0.63/day` against `prod $0.54/day` — dev is slightly the more expensive of
+the two, and it is not the one serving players. Destroying it roughly doubles the
+runway. What it costs you is the staging environment that caught the realtime
+outage on 2026-08-14 before prod was touched.
+
+On a FREE plan, exhausting credits **suspends resources**; it does not bill.
 
 **No budget can see this.** Spend is zero because credits absorb the bill before
-Cost Explorer sees it (measured: `-0.0000001/day` while credits fell $1.30/day).
+Cost Explorer sees it (measured: `-0.0000001/day` while credits fell $3.60/day).
 The only signal is `aws freetier get-account-plan-state`, published daily by
-`.github/workflows/free-tier-runway.yml` and alarmed below $50.
+`.github/workflows/free-tier-runway.yml` and alarmed below **$110** — thirty days
+at the current burn. It was $50, which had become fourteen days' notice for a
+decision that may need a billing change to act on.
 
 The plan is to stay on FREE. That decision is the operator's and is current.
 
@@ -323,10 +347,16 @@ It needs a real Telegram account, so it cannot be automated from here.
 
 ### 2. Decide when to retire `dev`
 
-It has earned its place: four SPA bugs, the blanket-grant change and both drills
-were found or proven there. It also costs roughly six weeks of runway -- two
-environments burn about $2.2/day against $145 remaining, so mid-October rather
-than early December.
+It has earned its place: four SPA bugs, the blanket-grant change, both drills,
+and the crash-looping realtime container on 2026-08-14 were found or proven
+there. It also costs roughly HALF THE REMAINING RUNWAY -- two environments burn
+$3.60/day against $134.97 remaining, so late September rather than December, and
+Cost Explorer puts dev at $0.63/day against prod's $0.54.
+
+That is the whole trade, stated plainly: retiring dev roughly doubles the time
+before the account suspends, and gives up the environment that has caught every
+significant fault before it reached players. Upgrading the account plan buys the
+same time without giving that up, and also lifts the 24-hour RPO and Multi-AZ.
 
 Retiring it is a short PR plus two applies, and `CUTOVER.md` Phase 3 lists the
 order. The `dev/` dumps in S3 survive the teardown regardless: Object Lock holds

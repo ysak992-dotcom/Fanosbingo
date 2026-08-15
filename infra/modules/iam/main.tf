@@ -528,7 +528,7 @@ data "aws_iam_policy_document" "github_deploy" {
   # THE SPEND BUDGETS CANNOT SEE THIS. Every budget here watches cost, and cost
   # is ZERO on a FREE plan -- credits absorb the bill before it reaches Cost
   # Explorer. Measured: `ce get-cost-and-usage` returns -0.0000001/day while the
-  # credit balance falls by roughly $1.30/day. So the only signal that this
+  # credit balance falls by $3.60/day. So the only signal that this
   # account is approaching SUSPENSION is the plan state itself, and something
   # has to be allowed to read it.
   #
