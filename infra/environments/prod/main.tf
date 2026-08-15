@@ -378,45 +378,46 @@ module "monitoring" {
   # account spends the gap with no warning that it is heading for suspension.
   enable_free_tier_alarm = true
 
-  # OFF FOR NOW, AND BOTH FLIP IN THE SAME APPLY -- the one AFTER the deploy that
-  # ships the code they watch.
+  # ON, and both preconditions were confirmed on THIS environment rather than
+  # inferred from dev:
   #
-  # These are the two alarms that close the largest hole in this stack: until the
-  # deep check exists, postgrest, realtime and the functions service can each
-  # stop with no alarm anywhere, because the only external check is answered by
-  # Caddy itself and there are no ECS task-count alarms. And until the drift
-  # alarm exists, db/20-post/019's ledger is a table that grows rather than a
-  # control.
+  #   https://api.<domain>/functions/v1/readyz/deep -> 200
+  #     {"ready":true,"down":[],"checks":{database 63ms, postgrest 200/53ms,
+  #                                       realtime 200/27ms}}
+  #   BalanceDriftAccounts -> datapoint 0 at 2026-08-15T09:51 +03:00
   #
-  # They are off because both depend on containers that have not been built yet:
+  # These are the two alarms that close the largest hole in this stack. Until the
+  # deep check exists, postgrest, realtime and the functions service can each stop
+  # with no alarm anywhere -- the only external check is answered by Caddy itself
+  # and there are no ECS task-count alarms. Until the drift alarm exists,
+  # db/20-post/019's ledger is a table that grows rather than a control.
   #
-  #   enable_deep_health_check     needs a functions image serving
-  #                                /readyz/deep (services/functions/src/upstreams.js)
-  #   enable_balance_drift_alarm   needs a ticker publishing BalanceDriftAccounts
-  #                                (services/ticker/src/index.js)
+  # NOT THEORETICAL. On 2026-08-14 the realtime container was crash-looping on
+  # DEV and nothing alarmed: rt.<domain>/healthz returned 200 throughout, because
+  # Caddy answers that path itself. It was found by hand, during an apply that was
+  # about something else. prod was checked for the same fault and was clean --
+  # `_realtime` was still owned by app_service -- but nothing would have told us
+  # either way.
   #
-  # Both treat missing data as breaching, deliberately, so turning either on
-  # before its metric exists produces an alarm that is red from creation and
-  # stays red -- which is how an alarm gets muted, and this module has the
-  # backup-alarm comment above as the precedent for taking that seriously.
-  #
-  # SEQUENCE: merge -> deploy-services -> confirm
-  #   curl -fsS https://api.<domain>/functions/v1/readyz/deep
-  #   aws cloudwatch get-metric-statistics --metric-name BalanceDriftAccounts ...
-  # -> set both to true -> apply.
-  enable_deep_health_check   = false
-  enable_balance_drift_alarm = false
+  # Both treat missing data as breaching, so they were held off until the images
+  # above were deployed here and the signals observed. Turning either on earlier
+  # produces an alarm red from creation, which is how an alarm gets muted.
+  enable_deep_health_check   = true
+  enable_balance_drift_alarm = true
 
-  # OFF for a THIRD reason, and a different one: these two watch metrics that
-  # only exist once an instance has booted with the new user_data. That is a
-  # LAUNCH TEMPLATE change, and modules/ecs is explicit that such a change does
-  # not take effect on apply -- the ASG references $Latest, so Terraform sees no
-  # diff on it and instance_refresh never fires. It needs a deliberate
-  # `aws autoscaling start-instance-refresh`, which is a ~194-second outage
-  # measured on prod on 2026-08-13. See AGENTS.md section 7.
+  # STILL OFF, and for a reason the two above no longer share: this one watches
+  # metrics that do not exist until an instance has BOOTED with the new
+  # user_data. That is a launch-template change, and modules/ecs is explicit that
+  # such a change does not take effect on apply -- the ASG references $Latest, so
+  # Terraform sees no diff on it and instance_refresh never fires.
   #
-  # So: apply, then refresh the instance at a quiet moment, then confirm
-  # MemoryUsedPercent has a datapoint, then turn this on.
+  # It needs a deliberate `aws autoscaling start-instance-refresh`, which on this
+  # environment is a ~194-second outage of the LIVE SITE, measured on 2026-08-13.
+  # That is a decision to take at a quiet hour on its own, not something to fold
+  # into a sequence about something else.
+  #
+  # So: refresh the instance deliberately, confirm MemoryUsedPercent has a
+  # datapoint, then turn this on.
   enable_host_metric_alarms = false
 
   # Must match the namespace the containers publish to, or the game-loop alarm
