@@ -25,6 +25,7 @@
 import {
   generateBingoCard,
   checkWin,
+  canClaimBingo,
   getBingoLetter,
   getWinningPattern,
   convertPatternNumbersToCells,
@@ -259,6 +260,61 @@ console.log('\nformatBirr — this renders money to a player');
   check('Infinity renders as 0', formatBirr(Infinity) === '0');
 
   check('the unit form appends the Amharic label', formatBirrWithUnit(40) === `40 ${CURRENCY_LABEL}`);
+}
+
+console.log('\ncanClaimBingo — the guard on a button that can disqualify you');
+
+{
+  // THE SAME CARD AND THE SAME VECTORS as db/test/game_integrity_test.sql, so
+  // the TypeScript mirror and the SQL original are held to one specification.
+  // If they ever disagree, one of these suites fails and says so.
+  //
+  // Row 0 is [1, 16, 31, 46, 61]; the free centre is at [2][2], in row 2.
+  const card = [
+    [1, 2, 3, 4, 5],
+    [16, 17, 18, 19, 20],
+    [31, 32, 0, 34, 35],
+    [46, 47, 48, 49, 50],
+    [61, 62, 63, 64, 65],
+  ];
+
+  // integrity test 2: a genuine completed line, claimed on the number that
+  // completed it.
+  check('a line completed by the current number CAN be claimed',
+    canClaimBingo(card, [1, 16, 31, 46, 61], 61) === true);
+
+  // integrity test 3: the line was completed two draws ago. The server refuses
+  // this and disqualifies; the button must therefore be dead.
+  check('a line completed by an EARLIER draw cannot be claimed',
+    canClaimBingo(card, [1, 16, 31, 46, 61, 2], 2) === false);
+
+  // integrity test 4: the current number was never drawn.
+  check('an undrawn current number cannot be claimed',
+    canClaimBingo(card, [1, 16, 31, 46], 61) === false);
+
+  // integrity test 1: one number called, no line anywhere.
+  check('an incomplete card cannot be claimed', canClaimBingo(card, [1], 1) === false);
+
+  // The free centre counts without ever being called: column 2 is
+  // [31, 32, 0, 34, 35].
+  check('the free centre completes a column without being drawn',
+    canClaimBingo(card, [31, 32, 34, 35], 35) === true);
+
+  // Both diagonals. [0,0][1,1][2,2][3,3][4,4] = 1,17,0,49,65
+  check('the top-left diagonal counts',
+    canClaimBingo(card, [1, 17, 49, 65], 65) === true);
+  // [0,4][1,3][2,2][3,1][4,0] = 5,19,0,47,61
+  check('the top-right diagonal counts',
+    canClaimBingo(card, [5, 19, 47, 61], 61) === true);
+
+  // Four corners: [0,0]=1 [4,0]=61 [0,4]=5 [4,4]=65
+  check('four corners counts', canClaimBingo(card, [1, 61, 5, 65], 65) === true);
+
+  // Degenerate inputs reach this from a game that has not drawn yet. The button
+  // must be dead rather than throwing.
+  check('no current number -> cannot claim', canClaimBingo(card, [1, 2], null) === false);
+  check('no called numbers -> cannot claim', canClaimBingo(card, [], 1) === false);
+  check('no card -> cannot claim', canClaimBingo(null, [1], 1) === false);
 }
 
 console.log(failures === 0 ? '\nAll Mini App logic tests passed.' : `\n${failures} FAILED.`);

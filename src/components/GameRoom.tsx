@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback } from 'react';
 import { supabase, Game, Player } from '../lib/supabase';
 import { getAccessToken } from '../lib/auth';
 import { BingoCard } from './BingoCard';
-import { getBingoLetter } from '../utils/bingoUtils';
+import { getBingoLetter, canClaimBingo } from '../utils/bingoUtils';
 import { Trophy, Eye } from 'lucide-react';
 import { useConnectionManager } from '../hooks/useConnectionManager';
 import { formatBirr, CURRENCY_LABEL } from '../utils/formatBalance';
@@ -258,8 +258,28 @@ export function GameRoom({
     setLocalMarkedCells(newMarkedCells);
   }, [currentPlayer, playerId, game?.status, localMarkedCells]);
 
+  // Would the server accept a claim right now?
+  //
+  // A refused claim is not a no-op: atomic_claim_bingo sets is_disqualified on
+  // the player row, so a mis-tap ends the game for somebody who paid a stake to
+  // enter it, with no refund -- refund_player_stake only fires on release, which
+  // is impossible once the game has started. canClaimBingo mirrors
+  // check_player_win exactly, including the rule that the line must be completed
+  // BY the current number, and is tested against the same vectors as
+  // db/test/game_integrity_test.sql so the two cannot drift apart.
+  const claimable = canClaimBingo(
+    currentPlayer?.card_numbers as number[][] | undefined,
+    game?.called_numbers,
+    game?.current_number,
+  );
+
   const handleBingoClick = async () => {
     if (!currentPlayer || !playerId || game?.status !== 'playing' || currentPlayer.is_disqualified) return;
+
+    // Checked here as well as on the button's `disabled`. That is a UI state;
+    // this is the one a stray synthetic event or a double-tap landing between
+    // renders cannot get round.
+    if (!claimable) return;
 
     if (bingoLoading) return;
 
@@ -865,11 +885,13 @@ export function GameRoom({
                   <div className="space-y-2">
                     <button
                       onClick={handleBingoClick}
-                      disabled={bingoLoading}
+                      disabled={bingoLoading || !claimable}
                       className={`w-full font-bold py-2 sm:py-2.5 lg:py-3 px-4 rounded-xl text-lg sm:text-xl lg:text-2xl transition shadow-lg touch-manipulation ${
                         bingoLoading
                           ? 'bg-orange-400 text-white opacity-75 cursor-not-allowed'
-                          : 'bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white'
+                          : !claimable
+                            ? 'bg-gray-400 text-white opacity-60 cursor-not-allowed'
+                            : 'bg-orange-500 hover:bg-orange-600 active:bg-orange-700 text-white'
                       } ${bingoLoading ? 'animate-pulse' : ''}`}
                     >
                       {bingoLoading ? (
