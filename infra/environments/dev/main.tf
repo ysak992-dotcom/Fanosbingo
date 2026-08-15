@@ -439,6 +439,7 @@ module "monitoring" {
   # asking CloudWatch for the datapoint found it. Do that before turning any of
   # these on -- an alarm on a metric nothing publishes treats missing data as
   # breaching and is red from creation.
+  enable_host_metric_alarms = true
 
   # The external health check probes api.<domain_name>. Passed from the same
   # variable the app_stack and cloudflare modules use, so the thing being checked
