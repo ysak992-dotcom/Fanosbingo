@@ -587,21 +587,69 @@ A player wins by completing any of the following:
 
 Numbers are called automatically every 3.5 seconds by a scheduled backend function. Numbers range from 1 to 75 and are never repeated within the same round.
 
-### Auto-Mark
+> **This whole section was corrected on 2026-08-15.** Three of its statements
+> were wrong against the code, and one of them described the payout split.
 
-When a called number matches a number on a player's card, that cell is automatically marked. Players do not need to manually mark cells.
+### Marking
+
+Players mark cells **by tapping them**. `GameRoom.tsx` wires `onCellClick` to a
+manual handler; there is no auto-marking. (`useBatchedCellMarking` exists in
+`src/hooks/` and is imported by nothing.)
+
+**Marking does not affect whether you win.** The server's `check_player_win()`
+reads only the stored card, the called numbers and the current draw — it never
+looks at `marked_cells`. Marks are a way to keep track by eye. A fully-marked
+card wins nothing, which `db/test/game_integrity_test.sql` asserts.
+
+*This previously read "cells are automatically marked. Players do not need to
+manually mark cells."*
 
 ### Claiming a Win
 
-When a player completes a valid winning pattern, a 1-second claim window opens. The first valid claim within that window wins the round. This prevents race conditions and ensures fairness when multiple players complete patterns simultaneously.
+Completing a line does not win the round on its own — you must press **BINGO**,
+and the server re-checks the claim. Two rules decide the outcome:
+
+- the line must be completed **by the number just drawn**, so a card finished two
+  draws ago can no longer be claimed
+- the **first** claim opens a **1-second window**; every valid claim that lands
+  inside it is added to `winner_ids`, and the pot is divided by how many there
+  are
+
+*This previously read "the first valid claim within that window wins the round",
+which is the opposite of how the split works — the first claim starts the window,
+it does not take the prize.*
+
+> **OPEN QUESTION, and it is about money.** That window is 1000 ms measured from
+> when the first claim reaches the database. A second genuine winner has to
+> *notice*, *tap*, and complete a round trip inside it, and there is no
+> auto-claim. Measured latency is `p95 245 ms` for a lobby RPC — **from a GitHub
+> runner on datacentre transit**, not from a phone in Addis. Add ~400 ms of human
+> reaction and the margin is thin.
+>
+> If it is too thin, a player who genuinely completed the same line gets
+> **nothing** and the whole pot goes to whoever was faster — money lost to
+> latency rather than to skill. **It needs measuring before the constant is
+> changed.** See [AGENTS.md §0 item 1](AGENTS.md) and
+> [stress-test/README.md](stress-test/README.md).
+
+A mis-tap is not free either: a refused claim **disqualifies** the player for that
+round. The button is therefore disabled unless a claim would actually succeed —
+`canClaimBingo()` mirrors the server's rules exactly.
 
 ### Staking
 
-Each player stakes a fixed amount of credits to enter a round. The total staked amount forms the prize pool.
+Each player stakes a fixed amount of birr to enter a round. The total staked
+forms the prize pool.
 
-- Winner receives 75% of the prize pool
-- 25% is retained as a platform fee
-- If a player leaves before the round starts, their stake is fully refunded
+- Winner receives **80%** of the prize pool
+- **20%** is retained as commission
+- If a player leaves **before the round starts**, their stake is refunded — to
+  the balance that paid it, deposited or won (`db/20-post/014`)
+
+*This previously read 75/25. The rate moved to 20% in migration
+`20251227071701` and the documentation did not follow. It is not a constant:
+`settings.commission_rate` is read at runtime by `commission_rate()`, bounded
+0–50, and changing it is an admin action.*
 
 ---
 
