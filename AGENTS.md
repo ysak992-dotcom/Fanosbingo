@@ -510,7 +510,7 @@ Ordered by what blocks the most.
 
    And NOT with `otplib`. TOTP is a HMAC, a counter and a truncation — thirty
    lines, with published RFC 6238 test vectors that pin every step, all six of
-   which `src/totp.test.mjs` runs. A dependency there is transitive code inside
+   which `services/functions/src/totp.test.mjs` runs. A dependency there is transitive code inside
    the process holding `JWT_SECRET`, the database password and whatever KMS
    returns.
 8. ~~**Prod has never been applied.**~~ **Applied 2026-08-11**, serving
@@ -1303,9 +1303,15 @@ stops 25 insecure endpoints reappearing one convenience at a time.
 **Still to build**, with the auth each needs — recorded in
 `services/functions/src/index.js` so it sits where the work happens:
 
+> **`POST /telegram/webhook` was in this table until 2026-08-15 and has been
+> BUILT since 2026-08-08** — it is defined in `services/functions/src/index.js`
+> and answers `/start` and `/help`. The same staleness sat in that file's own
+> header, which this table is mirrored from, so the two agreed with each other
+> and both disagreed with the code. **A list of remaining work that includes
+> finished work is worse than no list.**
+
 | Route | Notes |
 |---|---|
-| `POST /telegram/webhook` | verify `X-Telegram-Bot-Api-Secret-Token` **strictly** — reject a *missing* header, because a forger simply omits it. `setWebhook` must be called WITH `secret_token`, and re-registered BEFORE the check is deployed or the bot goes silent. The admin panel used to offer a button for this that POSTed a 404 and did nothing; it now says so instead |
 | `POST /wins/credit` | `requireAuth`, debit in the DB, then `addWinCredits` on the contract signed by KMS. **Blocked on the contract existing**, and on crypto being un-deferred |
 | `POST /deposits/confirm` | `requireAuth`. Credit `req.auth.uid` only, never an id from the body. **Crypto path — deferred** |
 

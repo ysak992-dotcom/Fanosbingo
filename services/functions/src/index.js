@@ -27,15 +27,12 @@
  * because the inherited Deno versions are not being ported, and the
  * requirements they taught us should not be lost with them.
  *
- *   POST /telegram/webhook
- *     Telegram calls this, not a browser, so initData does not apply. It must
- *     verify X-Telegram-Bot-Api-Secret-Token with verifyWebhookSecret() --
- *     STRICTLY, rejecting a missing header, because a forger simply omits it.
- *     The inherited version registered the webhook with no secret_token at all
- *     and checked nothing, so anyone who knew the URL could forge an update and
- *     impersonate any player to the bot. When registering, call setWebhook WITH
- *     secret_token, and re-register BEFORE deploying the check or the bot goes
- *     silent.
+ *   POST /telegram/webhook  -- BUILT. See the route at the bottom of this file.
+ *     Left in this list until 2026-08-15, describing as pending a route defined
+ *     700 lines below it. AGENTS.md points at this comment as the source of
+ *     truth for what is outstanding, so the staleness propagated: its "Still to
+ *     build" table listed the same route. A list of remaining work that includes
+ *     finished work is worse than no list, because it is read as current.
  *
  *   POST /withdrawals
  *     requireAuth, then sign with KMS. Never a private key from the database --
