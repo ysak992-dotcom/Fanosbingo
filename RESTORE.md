@@ -10,6 +10,23 @@
 > are silently dropped — a database that looks restored and has lost its entire
 > authorization layer.
 
+> **Changed 2026-08-15 (#151).** The nightly schedule is now a MATRIX over both
+> environments. `dev` had never been backed up by the cron — the workflow
+> defaulted to `prod` — so the environment that then held the only real player
+> balances had no nightly dump at all. It does now, and it runs unattended.
+>
+> **`prod`'s nightly backup still waits for a human**, because the `prod` GitHub
+> Environment has required reviewers. On 2026-08-15 it sat in `waiting` from
+> 04:21 until approved by hand. Until that requirement changes, a night nobody
+> approves is a night with no prod dump — and `backup-did-not-run` is what tells
+> you, so do not mute it.
+>
+> **That alarm was also dead until 2026-08-15.** Its
+> `period × evaluation_periods` exceeded CloudWatch's 86400 ceiling, so it never
+> evaluated: dev went 78 hours with no backup and the alarm stayed OK. Both are
+> now 86400×1, and the fix was proven with a throwaway no-action alarm rather
+> than assumed — see AGENTS.md §0.
+
 Two recovery paths exist and they answer different questions. Reach for the
 right one first — using the wrong one costs time you will not have.
 

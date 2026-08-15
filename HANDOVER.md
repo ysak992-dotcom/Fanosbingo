@@ -1,7 +1,20 @@
 # Handover — read this before changing anything
 
-**Written 2026-08-09. Substantially corrected 2026-08-11 after the prod
-cutover.** For whoever picks this up next, human or agent.
+**Written 2026-08-09. Substantially corrected 2026-08-11 after the prod cutover,
+and again 2026-08-15 after a review that merged twelve pull requests
+(#149–#160).** For whoever picks this up next, human or agent.
+
+> **START WITH [AGENTS.md §0](AGENTS.md)** — "What is left, and why". It is the
+> live list and it is dated. This document is context; that one is the plan.
+>
+> **The single most urgent fact: about five weeks of account credit remain**
+> ($134.97 at $3.60/day, exhausted ~2026-09-22). A FREE plan that exhausts
+> credits SUSPENDS resources. See §2 below.
+>
+> **Both databases are at 125 migrations** and carry a balance ledger, CSPRNG
+> draws, and `search_path` pinned with `pg_temp` last on every definer function.
+> Both environments carry 16–17 alarms, all OK. The game loop and eight
+> cheat-attacks run in CI on every pull request.
 
 This is a real-money game **in the sense that it is built to hold real money**,
 and it does not hold any yet. The wallet is empty on both BSC networks and no

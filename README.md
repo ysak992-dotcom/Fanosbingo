@@ -68,12 +68,12 @@ countdown ticks — driven by a server-side game loop, not by a browser tab.
 | Operator notifications | **per claim, to Telegram** — a deposit claim or withdrawal request reaches the operator in seconds. The 4-hour queue alarms remain as the backstop |
 | Telegram bot | **answers `/start` and `/help`** with a button that opens the Mini App inside Telegram |
 | Admin | Telegram identity + `is_admin`, **plus TOTP on money actions** (approve a deposit, complete a withdrawal). **Reachable two ways:** `t.me/BingoNovaaBot/app?startapp=admin` in Telegram, or the Login Widget at `app.<domain>/admin` in a browser. Bootstrap route promotes only the first admin, then disarms |
-| Alerting | **working, and proven** — 31 alarms in the account: 13 on prod, 12 on dev, 2 account-wide detections, and 4 AWS-created autoscaling ones. Delivery confirmed on the device, not the console: email and Telegram both received a fired alarm. SMS reports CONFIRMED and delivers nothing |
+| Alerting | **working, and proven** — 35 alarms in the account: 17 on prod, 16 on dev, 2 account-wide detections, plus AWS-created autoscaling ones. Four kinds were added 2026-08-15: `origin-degraded` (postgrest/realtime/functions could each stop with NO alarm), `balance-ledger-drift`, `host-memory-high`, `host-disk-high`. Delivery confirmed on the device, not the console: email and Telegram both received a fired alarm. SMS reports CONFIRMED and delivers nothing |
 | Currency | **whole birr, integer, labelled ብር.** One row value = one birr. There is no sub-unit and no divisor |
 | Database authorization | **enforced** — EXECUTE is an allowlist, `telegram_users` is owner-scoped, game state is read-only to clients, verified by `probe-public-access.sh` |
 | Crypto (wallet login, BNB deposit/withdrawal) | **deferred, not removed** — every surface is behind `VITE_CRYPTO_ENABLED`, off by default. Ethiopian players overwhelmingly do not hold cryptocurrency, so birr is the currency that matters. Code, contract and KMS key all retained |
 | Smart contract | **not deployed** — and not on the critical path while crypto is deferred |
-| Production | **Applied 2026-08-11 and serving `bingonova.org` since 2026-08-12.** 5 services, 122 migrations, 13 alarms, nightly backups. `dev` serves `yisakmesifin.org` and is retained as the rollback |
+| Production | **Applied 2026-08-11 and serving `bingonova.org` since 2026-08-12.** 5 services, **125 migrations**, 17 alarms, nightly backups. `dev` serves `yisakmesifin.org` and is retained as the rollback |
 
 **The money round trip is closed:** deposit by bank, play, withdraw by bank. That is
 the whole loop, with no wallet anywhere in it.
@@ -316,6 +316,18 @@ What to actually look for in that summary:
 ---
 
 ## What is left
+
+> **Rewritten 2026-08-15.** Items 1, 3 and 4 below were completed and are kept
+> only for the reasoning they record. **The live list is
+> [§0 "What is left, and why" in AGENTS.md](AGENTS.md).** Read that first; this
+> section is history.
+
+**THE ONE THAT OUTRANKS EVERYTHING: the account has about five weeks of credit
+left.** Measured 2026-08-15 at **$3.60/day against $134.97**, so credits are
+exhausted around **2026-09-22**. On a FREE plan that **suspends resources** — it
+does not start billing — which means the game stops with player balances inside a
+suspended database. Every other item on any list in this repository is
+subordinate to that. See [HANDOVER.md §2](HANDOVER.md).
 
 Ordered by what unblocks the most. Engineering detail for every item is in
 **[AGENTS.md](AGENTS.md)** §0.

@@ -1,5 +1,28 @@
 # Bingo Stress Testing Suite
 
+> ## Next use: measure the claim window (2026-08-15)
+>
+> **The open question this suite is best placed to answer.**
+> `CLAIM_WINDOW_MS = 1000`. The window opens when the FIRST claim reaches the
+> database; a second genuine winner then has one second to *notice*, *tap*, and
+> complete a round trip. The BINGO button requires a human tap — there is no
+> auto-claim.
+>
+> The numbers already measured below are the starting point and they are
+> encouraging in the wrong direction: `p95 245ms` for a lobby RPC and `p95 107ms`
+> edge-only, **from a GitHub runner** — a datacentre on good transit. An
+> Ethiopian mobile round trip is materially worse, and human reaction to a visual
+> stimulus is ~250ms at the floor and realistically 400ms+ for "notice the number
+> completes my line, move thumb, tap".
+>
+> If reaction + RTT exceeds 1000ms for a typical player, a second genuine winner
+> gets **nothing** and the pot goes entirely to whoever was faster — losing money
+> to latency rather than to skill. That is a fairness problem, not a bug, and it
+> needs measurement before anyone changes the constant.
+>
+> What would settle it: p95/p99 of `POST /functions/v1/claim-bingo` from a client
+> on a representative Ethiopian mobile network, not from a runner.
+
 > ## The suite here has still never run. Something else did.
 >
 > ❌ **Superseded 2026-08-13.** The claim below — that a single `t4g.small`

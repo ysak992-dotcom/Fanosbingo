@@ -35,7 +35,132 @@ top to bottom once, then used as reference.
 
 ---
 
-## 0. Start here
+## 0. What is left, and why — the live list
+
+> **Written 2026-08-15, at the end of a review that merged twelve pull requests
+> (#149–#160).** This section supersedes the "What is left" list in README.md,
+> which is now history. If you are an agent or engineer picking this up, start
+> here and then read §6.
+
+### The one that outranks everything: five weeks of runway
+
+```
+plan          FREE / ACTIVE
+credits       $134.97, falling $3.60/day  (measured, four consecutive days)
+exhausted     ~2026-09-22
+plan expiry   2027-01-14   (the credits bind first, by four months)
+```
+
+On a FREE plan, exhausting credits **SUSPENDS RESOURCES** — it does not start
+billing. That is the game stopping with player balances inside a suspended
+database. Nothing else in this repository matters if that happens.
+
+**This number was wrong in six places until 2026-08-15**, claiming ~$1.30/day and
+December. It was measured once, when only `dev` existed, and never re-measured
+after prod was stood up alongside it. Do not trust a cost figure in this
+repository that does not say when it was measured.
+
+**Two ways out, and they are not equivalent:**
+
+| | effect | cost |
+|---|---|---|
+| Upgrade to a Paid plan | removes the deadline entirely | money; also lifts the 24-hour RPO cap and unlocks Multi-AZ and GuardDuty |
+| Retire `dev` | roughly doubles the runway (`dev` is $0.63/day, prod $0.54) | loses the environment that caught the crash-looping realtime container on 2026-08-14 *before* prod was touched |
+
+Upgrading closes four problems at once and is the recommendation. Retiring `dev`
+is the free option and a real one, but read `CUTOVER.md` first — the free-tier
+alarm must exist in prod *before* `dev` goes, and `dev` going is itself one of
+the two things that moves the deadline.
+
+### Then, in order
+
+**1. Measure the claim window against real latency.** `CLAIM_WINDOW_MS = 1000`.
+The window opens when the FIRST claim reaches the database; a second genuine
+winner then has one second to *notice*, *tap*, and complete a round trip. The
+BINGO button requires a human tap — there is no auto-claim. On Ethiopian mobile
+that plausibly costs somebody a share of a pot they earned, which is a fairness
+problem rather than a bug. `load-test.yml` already exists and can produce the
+p95/p99 the decision needs. **This is measurable, unlike everything else on this
+list, which is why it is first.**
+
+**2. Prod's nightly backup still waits on a human.** The `prod` GitHub
+Environment has required reviewers, so `db-backup.yml`'s prod job sits in
+`waiting` until somebody clicks. On 2026-08-15 it waited from 04:21 until
+approved by hand. `dev` now backs up unattended (#151 made the schedule a matrix
+over both environments); prod cannot until that approval requirement is changed.
+This is a repository setting, not code.
+
+**3. RPO on real money is 24 hours.** `backup_retention_period = 1` is the free
+plan's hard ceiling — 2 is refused with `FreeTierRestrictionError`. The nightly
+`pg_dump` to S3 under Object Lock is the stronger control and answers "undo last
+Monday"; RDS PITR only answers "undo the last day". `real_money = true` now
+REFUSES to apply until retention is 7, which means the gate works and cannot be
+satisfied without the plan upgrade. Same decision as the runway.
+
+**4. Single instance, single AZ.** A planned refresh is ~50 seconds of the site
+being unreachable (measured on prod 2026-08-15: Cloudflare returned 521 at t+27s
+and t+51s, 200 by t+75s, refresh reported complete at 216s). An unplanned
+instance failure is 3–5 minutes. An AZ failure is a manual restore. Two instances
+need an ALB and service discovery, which the budget does not currently allow —
+`accept_single_az_risk` exists so that choice is recorded in the diff rather than
+defaulted into.
+
+**5. `enable_free_tier_alarm = false` on dev.** Only prod carries it. That is
+correct while both exist, but it must not be the thing that gets forgotten if
+prod is ever the one retired.
+
+### What was closed on 2026-08-15, so you do not redo it
+
+Twelve PRs, #149–#160. The four that changed player-visible behaviour:
+
+- **A missing `settings.commission_rate` row paid every winner ZERO.** The
+  `COALESCE` sat inside the query, so no matching row meant NULL, `winner_prize`
+  became NULL, and `atomic_claim_bingo` paid `COALESCE(winner_prize, 0)`. Game
+  recorded finished, `winners_paid` set, no error. `commission_rate()` is now the
+  single reader and RAISES rather than guessing.
+- **The BINGO button disqualified players on a mis-tap.** It was always enabled
+  and sent claims unchecked; a refused claim sets `is_disqualified`, ending a
+  game the player paid a stake to enter. `canClaimBingo()` now mirrors
+  `check_player_win` exactly.
+- **`game_tick` never converged on one waiting game.** dev carried two from
+  2026-08-13; the ticker rolled both countdowns forever and neither could start.
+- **realtime was crash-looping on dev and nothing alarmed** —
+  `rt.<domain>/healthz` returns 200 because Caddy answers that path itself.
+
+And the infrastructure work: a balance ledger with reconciliation, `search_path`
+pinned with `pg_temp` last on every definer function, CSPRNG draws, the game loop
+and eight cheat-attacks under test in CI, dependency and image scanning, host
+metrics, and four new alarm types live in both environments.
+
+### Traps this review hit, so you do not
+
+- **`systemctl is-active` is not evidence.** The host-metrics timer ran every
+  five minutes for half an hour and published nothing — the CLI rejected the
+  dimension shape and the script's `||` swallowed it. Ask CloudWatch for the
+  datapoint.
+- **`StateReason` and `queryDate` on a CloudWatch alarm only refresh on a
+  TRANSITION.** They tell you nothing about whether an alarm is evaluating. To
+  test that, create a throwaway alarm with the same config and NO SNS actions on
+  a metric that does not exist; `treat_missing_data = breaching` must drive it to
+  ALARM. A `period × evaluation_periods` above 86400 never evaluates at all, and
+  reports `Unchecked: Initial alarm creation` forever.
+- **`SET search_path = public` does not stop temp-table shadowing.** `pg_temp` is
+  searched first for relation names unless listed. It must be
+  `public, pg_temp`.
+- **The functions service runs in BRIDGE network mode; only Caddy is HOST.** So
+  `127.0.0.1` inside `functions` is its own namespace, not the instance. Reach
+  the host at the default gateway from `/proc/net/route`.
+- **A launch-template change does not take effect on apply.** The ASG references
+  `$Latest`, so Terraform sees no diff and `instance_refresh` never fires. It
+  needs a deliberate `aws autoscaling start-instance-refresh`.
+- **`db/00-bootstrap` is REPEATABLE — it re-runs only when its CONTENT changes.**
+  So a declaration that is correct can sit next to a database that is wrong
+  indefinitely. That is exactly how `_realtime` ownership drifted on dev after a
+  restore and was not corrected for weeks.
+
+---
+
+## 0.1 Start here — setup and first checks
 
 **If you are picking this up cold, do these three things first.**
 

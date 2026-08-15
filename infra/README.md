@@ -45,6 +45,90 @@ only, so a grey-cloud record black-holes with no error anywhere.
 Engineering context and the reasoning behind these decisions live in
 [../AGENTS.md](../AGENTS.md).
 
+## Infrastructure state, as of 2026-08-15 — read this first
+
+> A review on 2026-08-15 merged twelve pull requests (#149–#160) and changed
+> several things in this directory. The sections below were written earlier; this
+> one supersedes them where they disagree.
+
+### The deadline that governs every other decision here
+
+```
+credits   $134.97, falling $3.60/day   (measured across four days, 2026-08-15)
+gone      ~2026-09-22
+```
+
+A FREE account plan that exhausts its credits **SUSPENDS RESOURCES**. Every cost
+decision documented in this file — no NAT Gateway, no ALB, one instance, EC2 over
+Fargate — was taken to fit a ~$30/month budget, and all of it is moot if the
+account suspends in five weeks.
+
+**This file and five others claimed ~$1.30/day and December until 2026-08-15.**
+That figure was measured when only `dev` existed and was never re-measured after
+prod was stood up beside it. Treat any undated cost figure here as suspect.
+
+### What changed in this directory
+
+**Four new alarm types, all count-gated, live in both environments.** The module
+header carries the arithmetic: **$2.45/month** when all four are on, $0 when off.
+
+| alarm | the gap it closes |
+|---|---|
+| `origin-degraded` | postgrest, realtime and functions could EACH stop with no alarm anywhere — the only external check is answered by Caddy itself and there are no ECS task-count alarms. Proven live: realtime crash-looped on dev on 2026-08-14 and nothing fired |
+| `balance-ledger-drift` | `db/20-post/019` journals every balance movement; without this the journal is a table that grows rather than a control |
+| `host-memory-high` | basic EC2 metrics contain NO memory or disk figure — they are inside the guest, and `modules/ecs` keeps detailed monitoring off |
+| `host-disk-high` | the root volume holds container images and the swapfile |
+
+**`real_money` is now a variable with preconditions.** `modules/rds` refuses to
+apply when `real_money = true` unless `backup_retention_period >= 7`,
+`deletion_protection` is on and a final snapshot is required. It deliberately
+does NOT force Multi-AZ — that roughly doubles the RDS bill, and a gate demanding
+real spending is one an operator routes around by never setting the flag at all.
+`accept_single_az_risk` records that choice in the diff instead.
+
+**Host metrics come from a systemd timer in `user_data`, not the CloudWatch
+agent.** Two metrics rather than the agent's dozen, using the AWS CLI already
+installed for the Elastic IP association.
+
+### Three traps in this directory specifically
+
+1. **A launch-template change does not take effect on apply.** The ASG references
+   `$Latest`, so Terraform reports success, sees no diff on the ASG, and
+   `instance_refresh` never fires. The running instance keeps the old `user_data`
+   indefinitely. It needs a deliberate
+   `aws autoscaling start-instance-refresh --preferences MinHealthyPercentage=0`.
+   Measured 2026-08-15: **216 seconds end to end, of which the site was
+   unreachable for about 50** (Cloudflare 521 at t+27s and t+51s, 200 by t+75s).
+   Check the AMI in the template against the AMI on the instance first — if they
+   differ you are taking an OS upgrade in the same outage.
+
+2. **A CloudWatch alarm whose `period × evaluation_periods` exceeds 86400 never
+   evaluates.** It sits at its creation state forever and reports
+   `Unchecked: Initial alarm creation`. Two alarms here had that shape and were
+   silently dead. **`StateReason` and `queryDate` only refresh on a TRANSITION**,
+   so neither proves an alarm is working. To test one, create a throwaway alarm
+   with the same config and NO SNS actions on a metric that does not exist;
+   `treat_missing_data = breaching` must drive it to ALARM within a minute.
+
+3. **`functions` runs in BRIDGE network mode — only Caddy is HOST.** So
+   `127.0.0.1` inside the functions container is its own namespace, not the
+   instance. `app_stack` carried a dead `POSTGREST_URL = http://127.0.0.1:3000`
+   for exactly that reason and it has been removed; anything needing the host
+   from a bridge container resolves its default gateway from `/proc/net/route`.
+
+### What is still open here
+
+- **The runway.** Upgrade the plan, or retire `dev` (which roughly doubles it —
+  `dev` costs $0.63/day against prod's $0.54 — at the cost of the environment
+  that caught the realtime outage before prod was touched).
+- **Prod's nightly backup waits on a human**, because the `prod` GitHub
+  Environment has required reviewers. `dev` now backs up unattended.
+- **RPO on real money is 24 hours**, capped by the free plan.
+- **One instance, one AZ.** Two needs an ALB and service discovery, which the
+  budget does not currently allow.
+
+---
+
 ## Layout
 
 ```
