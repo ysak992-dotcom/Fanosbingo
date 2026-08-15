@@ -18,11 +18,18 @@
 Terraform for the AWS build. Target: **~$30/month** at ~200 users, structured so
 growth is a configuration change rather than a rewrite.
 
-**State, ✅ verified 2026-08-09:** `dev` and `account` are applied and healthy —
-five services `ACTIVE 1/1` in each environment, **31 alarms** in the account (13 prod, 12 dev, 2 account-wide, 4 AWS-created), CloudTrail logging, a
-dev plan reporting no changes, and the Mini App serving at `app.<domain>`.
-**`prod` is written and plans cleanly but has never been applied**, and `dev` is
-therefore the live environment.
+**State, ✅ verified 2026-08-15:** all three roots — `account`, `dev` and `prod` —
+are applied and healthy. Five services `ACTIVE 1/1` in **each** environment,
+**35 alarms** in the account (17 prod, 16 dev, 2 account-wide) with **none in
+ALARM**, 125 migrations on both databases, CloudTrail logging, and the Mini App
+serving at `app.<domain>` in both.
+
+> **This paragraph read "`prod` is written and plans cleanly but has never been
+> applied, and `dev` is therefore the live environment" until 2026-08-15.** That
+> was true on 2026-08-09 and wrong from 2026-08-11, when prod was applied and
+> took the domain. **prod serves `bingonova.org` and is the live environment;
+> `dev` serves `yisakmesifin.org` and is retained as the rollback.** Anyone who
+> acted on the old sentence would have been operating on the wrong environment.
 
 ### Three hostnames, and what each one is
 

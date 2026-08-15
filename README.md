@@ -56,8 +56,8 @@ countdown ticks — driven by a server-side game loop, not by a browser tab.
 
 | Layer | State |
 |---|---|
-| Infrastructure (VPC, RDS, ECS, KMS, CloudTrail) | live in **dev**, Terraform, applied through CI |
-| Database | PostgreSQL 16 on RDS, **120 migrations applied to dev**, PITR, restore drilled monthly |
+| Infrastructure (VPC, RDS, ECS, KMS, CloudTrail) | live in **dev AND prod**, Terraform, applied through CI |
+| Database | PostgreSQL 16 on RDS, **125 migrations on both environments** (2026-08-15), PITR capped at 1 day by the account plan, restore drilled monthly |
 | API (PostgREST) · realtime · game loop · TLS | running |
 | Auth service | running — Telegram `initData` verified, JWT enforced by RLS |
 | Mini App | served from Caddy at `app.<domain>`, built into the image |

@@ -8,14 +8,32 @@ Read the whole thing before running any of it.
 | Phase | | |
 |---|---|---|
 | 0 | Blockers cleared | `backup_retention_period` lowered to 1; prod applyable for the first time |
-| 1 | prod stood up beside dev | 104 resources, schema (122 migrations), secrets, five services — no player-visible change |
+| 1 | prod stood up beside dev | 104 resources, schema (**125 migrations** as of 2026-08-15), secrets, five services — no player-visible change |
 | 2 | prod took the domain | DNS, zone settings, ruleset, health check and all four monitoring toggles moved |
 | 3 | **dev retired** | **NOT DONE.** dev is retained deliberately as the rollback until prod is fully exercised |
 
-What remains before Phase 3: play a round end to end through the Mini App, apply
-dev once to pick up the changes merged since its last apply, and confirm the SNS
-email subscription — it is still `PendingConfirmation`, so prod's email channel
-delivers nothing.
+What remains before Phase 3, **updated 2026-08-15**:
+
+- ~~apply dev to pick up merged changes~~ — done; dev is current and was
+  instance-refreshed on 2026-08-15
+- ~~confirm the SNS email subscription~~ — **done. Both environments now show
+  `confirmed` for email, SMS and the HTTPS Telegram endpoint.** (SMS is confirmed
+  and still delivers nothing: this account is not enrolled in AWS End User
+  Messaging. Telegram is the channel that works.)
+- **play a round end to end through the Mini App** — still outstanding, and now
+  the only functional item left before Phase 3
+
+> **PHASE 3 IS NO LONGER ONLY A TIDY-UP.** Retiring `dev` roughly DOUBLES the
+> account's remaining runway — `dev` costs $0.63/day against prod's $0.54, and
+> credits are exhausted around **2026-09-22** at the measured $3.60/day. That
+> makes this the cheapest of the two ways to move the deadline; the other is
+> upgrading the account plan, which costs money and closes three more problems at
+> once (the 24-hour RPO, Multi-AZ, GuardDuty).
+>
+> What retiring `dev` costs, stated so the trade is visible: it is the
+> environment that caught a crash-looping `realtime` container on 2026-08-14
+> **before prod was touched**, and every deploy since has been rehearsed there
+> first. See [AGENTS.md §0](AGENTS.md).
 
 > **Historical.** The domains have since split again: `prod` moved to
 > **bingonova.org** on 2026-08-12 and `dev` kept `yisakmesifin.org`. Everything

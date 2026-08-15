@@ -566,15 +566,20 @@ obligation — see §7.
 
 ### Migration status
 
+> **Refreshed 2026-08-15.** This table read "Auth hardening ⬜ not started" and
+> "Frontend + CDN ⬜ not started" until then; both had been complete for weeks.
+> A status table nobody updates is worse than no table, because it is read as
+> current.
+
 | Phase | Scope | State |
 |---|---|---|
-| 0 | Security remediation | ✅ code done; two operator actions outstanding (§7) |
-| 1 | Terraform foundation + CI/CD | ✅ complete, applied to dev |
-| 2 | Database on RDS | ✅ complete — 107 migrations applied |
-| 3 | Containers | 🔶 4 of 5 running; **25 edge functions not yet ported** |
-| 4 | Auth hardening | ⬜ not started |
-| 5 | Frontend + CDN | ⬜ not started |
-| 6 | Observability + cutover | 🔶 alarms, audit trail and DR drill landed; runbooks and load test outstanding |
+| 0 | Security remediation | ✅ code done; the outstanding items are upstream's, not this fork's — see §7 |
+| 1 | Terraform foundation + CI/CD | ✅ complete, applied to **account, dev and prod** |
+| 2 | Database on RDS | ✅ complete — **125 migrations** on both environments |
+| 3 | Containers | ✅ **5 of 5 running in both.** The 25 edge functions were deliberately NOT ported — the API was rebuilt instead, because all 25 used the service-role key and took identity from the request body |
+| 4 | Auth hardening | ✅ complete — `initData` HMAC verified, JWT enforced by RLS, admin is a flag on a proven identity, **TOTP on the two money actions** |
+| 5 | Frontend + CDN | ✅ Mini App served from Caddy at `app.<domain>`, cached at Cloudflare's edge. No CloudFront, deliberately — see infra/README.md |
+| 6 | Observability + cutover | ✅ cutover done 2026-08-12; 35 alarms, DR and recovery drills passing, load test run. **Runbooks remain the thin part** |
 
 ### Live right now (dev environment) — ✅ verified 2026-07-29
 
@@ -601,8 +606,13 @@ Verified reachable end to end (✅ 2026-07-29):
 whoami without a token  401    forged initData       401
 ```
 
-**prod exists in Terraform but has never been applied.** `PROD_APPLY_ENABLED` is
-deliberately unset, so merging to main plans prod and stops.
+> **STALE SINCE 2026-08-11 — prod IS applied and is the live environment**,
+> serving `bingonova.org` since 2026-08-12. Corrected 2026-08-15. The paragraph
+> below is kept because the reasoning it records — that prod once defined the
+> platform and no services at all — is why `modules/app_stack` exists.
+
+~~**prod exists in Terraform but has never been applied.** `PROD_APPLY_ENABLED` is
+deliberately unset, so merging to main plans prod and stops.~~
 
 > Until recently that statement was more optimistic than the code. Prod defined
 > the platform — VPC, RDS, ECS cluster, IAM — and **no services at all**, so
@@ -1717,12 +1727,18 @@ Making it work needs four things, none of which can be verified today:
    permissions problem and is not one
 4. `providers = { aws = aws, aws.replica = aws.replica }` on every `rds` call
 
-Dev should never have it (throwaway data, torn down between sessions) and **prod
-has never been applied**. So landing it would mean adding provider plumbing and a
-second regional key that nothing has ever run — the "control that exists, is well
-written, and is never exercised" pattern this repository keeps paying for. Build
-it with the first prod apply, when the restore can actually be drilled from the
-replica.
+Dev should never have it (throwaway data, torn down between sessions), and when
+this was written **prod had never been applied**. So landing it would have meant
+adding provider plumbing and a second regional key that nothing had ever run —
+the "control that exists, is well written, and is never exercised" pattern this
+repository keeps paying for.
+
+> **Updated 2026-08-15.** Prod has been applied since 2026-08-11, so the
+> precondition this deferred on is now met and a cross-region replica CAN be
+> drilled. It is still not built, and the reason has changed: at $3.60/day
+> against $134.97 of credit, a second regional KMS key and cross-region snapshot
+> copies are spend this account cannot currently justify. Revisit with the plan
+> upgrade — see §0.
 
 ### Known-deliberate weaknesses, accepted at this tier
 

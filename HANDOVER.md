@@ -65,9 +65,14 @@ Verified in the account, not inferred:
 ```
 terraform state       account/  dev/  prod/
 EIP behind the domain fanosbingo-prod-app   3.227.224.76
-prod                  5 services 1/1 · 122 migrations · 13 alarms, all OK
-dev                   5 services 1/1 · no DNS points at it
+prod                  5 services 1/1 · 125 migrations · 17 alarms, all OK
+dev                   5 services 1/1 · 125 migrations · 16 alarms, all OK
 ```
+
+> **Corrected 2026-08-15.** The dev line above read "no DNS points at it", which
+> stopped being true when the domains split on 2026-08-12: **dev serves
+> `yisakmesifin.org`** and answers 200 there. The paragraph below is about the
+> `bingonova.org` names only. Counts refreshed the same day.
 
 `api`, `app` and `rt` resolve to Cloudflare and are proxied to **prod**. Measured
 rather than assumed: over three minutes, prod's Caddy logged 180 requests and
