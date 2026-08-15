@@ -418,7 +418,27 @@ module "monitoring" {
   #
   # So: refresh the instance deliberately, confirm MemoryUsedPercent has a
   # datapoint, then turn this on.
-  enable_host_metric_alarms = false
+  # ON, and the datapoint was confirmed before the flag was flipped:
+  #
+  #   MemoryUsedPercent  42.0  at 2026-08-15T11:31 +03:00
+  #   DiskUsedPercent    18.3  at 2026-08-15T11:31 +03:00
+  #
+  # The instance refresh is done. 216 seconds end to end, of which the site was
+  # actually unreachable for about 50 -- Cloudflare returned 521 at t+27s and
+  # t+51s and 200 again by t+75s, so the origin came back well before the refresh
+  # reported complete. Run at 11:10 Addis with 0 players in any active game and
+  # the last player activity 75 minutes earlier, measured rather than assumed.
+  #
+  # AMI parity was checked first, as AGENTS.md section 7 requires: template and
+  # instance were both ami-0da34a447df8ced30, so this was a user_data change and
+  # not an OS upgrade taken in the same outage.
+  #
+  # ASKING CLOUDWATCH IS THE CHECK THAT MATTERS. On dev the timer was active, the
+  # script was present and executable, `systemctl is-active` said active -- and
+  # nothing was published for half an hour, because the CLI rejected the dimension
+  # shape and the script's `||` swallowed it. `is-active` is not evidence. The
+  # datapoint is.
+  enable_host_metric_alarms = true
 
   # Must match the namespace the containers publish to, or the game-loop alarm
   # watches nothing. Sourced from iam rather than restated, so it cannot drift.
