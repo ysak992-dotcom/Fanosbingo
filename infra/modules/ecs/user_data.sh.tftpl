@@ -116,13 +116,25 @@ disk=$(df --output=pcent / | tail -1 | tr -dc '0-9')
 [ -z "$mem" ] && exit 0
 [ -z "$disk" ] && exit 0
 
+# DIMENSIONS TAKE A LIST OF STRUCTURES, NOT Key=Value.
+#
+# This shipped as `Dimensions=Environment=$ENVIRONMENT`, which reads naturally
+# and is rejected by the CLI before the call is made:
+#
+#   Invalid type for parameter MetricData[0].Dimensions[0],
+#   value: Environment=dev, type: <class 'str'>, valid types: <class 'dict'>
+#
+# The timer ran on schedule, the script exited 0 because the `||` swallowed it,
+# and no metric was ever published. Found by looking for the datapoint after an
+# instance refresh rather than by trusting that the timer was active -- which it
+# was, faithfully failing every five minutes.
 aws cloudwatch put-metric-data \
   --region "$REGION" \
   --namespace "$NAMESPACE" \
   --metric-data \
-    "MetricName=MemoryUsedPercent,Value=$mem,Unit=Percent,Dimensions=Environment=$ENVIRONMENT" \
-    "MetricName=DiskUsedPercent,Value=$disk,Unit=Percent,Dimensions=Environment=$ENVIRONMENT" \
-  || echo "publish-host-metrics: put-metric-data failed"
+    "MetricName=MemoryUsedPercent,Value=$mem,Unit=Percent,Dimensions=[{Name=Environment,Value=$ENVIRONMENT}]" \
+    "MetricName=DiskUsedPercent,Value=$disk,Unit=Percent,Dimensions=[{Name=Environment,Value=$ENVIRONMENT}]" \
+  || echo "publish-host-metrics: put-metric-data FAILED"
 SCRIPT
 chmod +x /usr/local/bin/publish-host-metrics.sh
 
